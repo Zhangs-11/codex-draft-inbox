@@ -11,6 +11,11 @@ struct InboxRepositorySelfTests {
             try markHandledRemovesOnlySelectedItem()
             try missingStateIsEmpty()
             try manualRefreshQueuesBehindBackgroundSync()
+            try selectsNewestPreviewRelease()
+            try ignoresDraftAndOlderReleases()
+            try comparesMultiDigitVersions()
+            try checksForUpdatesOncePerDay()
+            try decodesGitHubReleaseResponse()
             print("CodexDraftInbox self-test passed")
         } catch {
             fputs("CodexDraftInbox self-test failed: \(error)\n", stderr)
@@ -89,6 +94,70 @@ struct InboxRepositorySelfTests {
         try expect(coordinator.finish(), "手动刷新没有排队")
         try expect(coordinator.begin(queueIfBusy: false), "排队的手动刷新没有补跑")
         try expect(!coordinator.finish(), "手动刷新被重复排队")
+    }
+
+    private static func selectsNewestPreviewRelease() throws {
+        let releases = [
+            release("v0.2.2"),
+            release("v0.2.3", prerelease: true),
+        ]
+
+        let update = AppReleaseSelector.update(from: releases, currentVersion: "0.2.2")
+
+        try expect(update?.tagName == "v0.2.3", "预发布版本没有被更新检查发现")
+    }
+
+    private static func ignoresDraftAndOlderReleases() throws {
+        let releases = [
+            release("v0.3.0", draft: true),
+            release("not-a-version"),
+            release("v0.2.2"),
+        ]
+
+        let update = AppReleaseSelector.update(from: releases, currentVersion: "0.2.2")
+
+        try expect(update == nil, "草稿、非法或相同版本被误报为更新")
+    }
+
+    private static func comparesMultiDigitVersions() throws {
+        try expect(AppVersion("0.10.0")! > AppVersion("0.9.9")!, "版本号被按字符串错误比较")
+        try expect(AppVersion("v1.2")! == AppVersion("1.2.0")!, "省略的补丁版本没有按 0 处理")
+    }
+
+    private static func checksForUpdatesOncePerDay() throws {
+        let now = Date(timeIntervalSince1970: 100_000)
+        try expect(
+            !AppReleaseSelector.shouldCheck(lastCheckedAt: now.addingTimeInterval(-23 * 60 * 60), now: now),
+            "24 小时内重复触发了自动检查"
+        )
+        try expect(
+            AppReleaseSelector.shouldCheck(lastCheckedAt: now.addingTimeInterval(-25 * 60 * 60), now: now),
+            "超过 24 小时没有触发自动检查"
+        )
+    }
+
+    private static func decodesGitHubReleaseResponse() throws {
+        let json = """
+        [{"tag_name":"v0.2.3","html_url":"https://github.com/example/releases/v0.2.3","draft":false,"prerelease":true}]
+        """
+
+        let releases = try JSONDecoder().decode([AppRelease].self, from: Data(json.utf8))
+
+        try expect(releases.first?.displayVersion == "0.2.3", "GitHub Release 响应解析失败")
+        try expect(releases.first?.prerelease == true, "预发布标记解析失败")
+    }
+
+    private static func release(
+        _ tagName: String,
+        draft: Bool = false,
+        prerelease: Bool = false
+    ) -> AppRelease {
+        AppRelease(
+            tagName: tagName,
+            htmlURL: URL(string: "https://example.com/\(tagName)")!,
+            draft: draft,
+            prerelease: prerelease
+        )
     }
 
     private static func item(id: String, completedAt: String, lastActivityAt: String? = nil) -> PendingItem {

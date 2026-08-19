@@ -16,7 +16,11 @@ elif [ "$#" -gt 0 ]; then
 fi
 
 if [ "${CODEX_DRAFT_INBOX_SKIP_SYSTEM_COMMANDS:-0}" != "1" ]; then
+    if [ -x "$INSTALL_APP/Contents/MacOS/CodexDraftInbox" ]; then
+        "$INSTALL_APP/Contents/MacOS/CodexDraftInbox" --unregister-login-item >/dev/null 2>&1 || true
+    fi
     launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
+    pkill -x CodexDraftInbox >/dev/null 2>&1 || true
 fi
 
 /usr/bin/python3 "$PLUGIN_ROOT/scripts/install_claude_hooks.py" --uninstall >/dev/null

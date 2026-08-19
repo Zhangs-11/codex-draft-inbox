@@ -15,20 +15,22 @@ let package = Package(
             exclude: [
                 "CodexDraftInboxApp.swift",
                 "DraftSyncService.swift",
+                "GitHubUpdateChecker.swift",
                 "InboxPanel.swift",
                 "InboxViewModel.swift",
             ],
-            sources: ["InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
+            sources: ["AppRelease.swift", "InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
             name: "CodexDraftInbox",
             dependencies: ["DraftInboxCore"],
             path: "Sources",
-            exclude: ["InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
+            exclude: ["AppRelease.swift", "InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
             sources: [
                 "CodexDraftInboxApp.swift",
                 "DraftSyncService.swift",
+                "GitHubUpdateChecker.swift",
                 "InboxPanel.swift",
                 "InboxViewModel.swift",
             ],

@@ -12,6 +12,8 @@ struct InboxPanel: View {
             header
             Divider().opacity(0.55)
 
+            updateBanner
+
             if viewModel.items.isEmpty {
                 emptyState
             } else {
@@ -145,6 +147,21 @@ struct InboxPanel: View {
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(.tertiary)
             Spacer()
+            Button {
+                viewModel.checkForUpdates()
+            } label: {
+                if viewModel.isCheckingForUpdates {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 54)
+                } else {
+                    Text("检查更新")
+                }
+            }
+            .disabled(viewModel.isCheckingForUpdates)
+            .font(.system(size: 10.5, weight: .medium))
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
             Label("登录自动启动", systemImage: "arrow.clockwise")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
@@ -157,6 +174,57 @@ struct InboxPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    @ViewBuilder
+    private var updateBanner: some View {
+        switch viewModel.updateCheckState {
+        case let .available(release):
+            HStack(spacing: 9) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(Color.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("菜单栏 App 有新版本 v\(release.displayVersion)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Text("前往 GitHub 查看说明并下载")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("前往更新") {
+                    viewModel.openAvailableUpdate()
+                }
+                .font(.system(size: 10.5, weight: .semibold))
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Color.blue.opacity(0.09))
+            Divider().opacity(0.55)
+        case let .current(version):
+            updateStatusBanner("已是最新版本 v\(version)", color: .green)
+        case .failed:
+            updateStatusBanner("检查更新失败，请稍后再试", color: .orange)
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    private func updateStatusBanner(_ text: String, color: Color) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: color == .green ? "checkmark.circle.fill" : "wifi.exclamationmark")
+                Text(text)
+                Spacer()
+            }
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(color.opacity(0.08))
+            Divider().opacity(0.55)
+        }
     }
 
     private var notificationPrivacy: some View {

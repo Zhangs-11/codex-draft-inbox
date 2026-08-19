@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -15,13 +16,18 @@ struct CodexDraftInboxApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let viewModel = InboxViewModel()
+    private lazy var viewModel = InboxViewModel()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private var itemsSubscription: AnyCancellable?
     private var previewWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if handleLoginItemCommand() {
+            NSApp.terminate(nil)
+            return
+        }
+        registerLoginItemIfNeeded()
         NSApp.setActivationPolicy(.accessory)
 
         if let button = statusItem.button {
@@ -46,6 +52,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.showPreviewWindow()
             }
         }
+    }
+
+    private func handleLoginItemCommand() -> Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--unregister-login-item") {
+            try? SMAppService.mainApp.unregister()
+            return true
+        }
+        if arguments.contains("--login-item-status") {
+            print(SMAppService.mainApp.status.rawValue)
+            return true
+        }
+        return false
+    }
+
+    private func registerLoginItemIfNeeded() {
+        let service = SMAppService.mainApp
+        guard service.status == .notRegistered else { return }
+        try? service.register()
     }
 
     @objc private func togglePopover() {

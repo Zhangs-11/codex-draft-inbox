@@ -9,31 +9,54 @@ final class InboxViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var notificationDraftPreviewEnabled = false
     @Published private(set) var isRefreshing = false
+    @Published private(set) var updateCheckState: UpdateCheckState = .idle
+    @Published private(set) var isCheckingForUpdates = false
 
     private let repository: InboxRepository
     private let syncService: DraftSyncService?
+    private let updateChecker: any UpdateChecking
+    private let currentVersion: String
+    private let defaults: UserDefaults
     private var timer: Timer?
+    private var updateTimer: Timer?
     private var refreshCoordinator = RefreshCoordinator()
+    private let lastUpdateCheckKey = "CodexDraftInbox.lastUpdateCheckAt"
+    private let availableUpdateTagKey = "CodexDraftInbox.availableUpdateTag"
+    private let availableUpdateURLKey = "CodexDraftInbox.availableUpdateURL"
 
     init(
         repository: InboxRepository = .live,
         syncService: DraftSyncService? = .bundled,
+        updateChecker: any UpdateChecking = GitHubUpdateChecker(),
+        currentVersion: String = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "0.0.0",
+        defaults: UserDefaults = .standard,
         startsPolling: Bool = true
     ) {
         self.repository = repository
         self.syncService = syncService
+        self.updateChecker = updateChecker
+        self.currentVersion = currentVersion
+        self.defaults = defaults
         reload()
         synchronize()
         loadSettings()
+        loadCachedUpdate()
+        checkForUpdatesIfNeeded()
         if startsPolling {
             timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.synchronize() }
+            }
+            updateTimer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.checkForUpdatesIfNeeded() }
             }
         }
     }
 
     deinit {
         timer?.invalidate()
+        updateTimer?.invalidate()
     }
 
     func reload() {
@@ -48,6 +71,90 @@ final class InboxViewModel: ObservableObject {
     func refresh() {
         isRefreshing = true
         synchronize(queueIfBusy: true, showProgress: true)
+    }
+
+    func checkForUpdates() {
+        performUpdateCheck(manual: true)
+    }
+
+    func openAvailableUpdate() {
+        guard case let .available(release) = updateCheckState else { return }
+        if !NSWorkspace.shared.open(release.htmlURL) {
+            errorMessage = "无法打开更新页面"
+        }
+    }
+
+    private func checkForUpdatesIfNeeded() {
+        let lastCheckedAt = defaults.object(forKey: lastUpdateCheckKey) as? Date
+        guard AppReleaseSelector.shouldCheck(lastCheckedAt: lastCheckedAt) else { return }
+        performUpdateCheck(manual: false)
+    }
+
+    private func loadCachedUpdate() {
+        guard let tagName = defaults.string(forKey: availableUpdateTagKey),
+              let rawURL = defaults.string(forKey: availableUpdateURLKey),
+              let htmlURL = URL(string: rawURL) else {
+            return
+        }
+        let release = AppRelease(tagName: tagName, htmlURL: htmlURL)
+        if AppReleaseSelector.update(from: [release], currentVersion: currentVersion) != nil {
+            updateCheckState = .available(release)
+        } else {
+            clearCachedUpdate()
+        }
+    }
+
+    private func cacheAvailableUpdate(_ release: AppRelease?) {
+        guard let release else {
+            clearCachedUpdate()
+            return
+        }
+        defaults.set(release.tagName, forKey: availableUpdateTagKey)
+        defaults.set(release.htmlURL.absoluteString, forKey: availableUpdateURLKey)
+    }
+
+    private func clearCachedUpdate() {
+        defaults.removeObject(forKey: availableUpdateTagKey)
+        defaults.removeObject(forKey: availableUpdateURLKey)
+    }
+
+    private func performUpdateCheck(manual: Bool) {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        let updateChecker = self.updateChecker
+        let currentVersion = self.currentVersion
+        Task.detached {
+            do {
+                let releases = try await updateChecker.fetchReleases()
+                let available = AppReleaseSelector.update(
+                    from: releases,
+                    currentVersion: currentVersion
+                )
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.defaults.set(Date(), forKey: self.lastUpdateCheckKey)
+                    self.cacheAvailableUpdate(available)
+                    self.isCheckingForUpdates = false
+                    self.updateCheckState = available.map(UpdateCheckState.available)
+                        ?? (manual ? .current(currentVersion) : .idle)
+                }
+            } catch {
+                if manual {
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        self.isCheckingForUpdates = false
+                        if case .available = self.updateCheckState {
+                            return
+                        }
+                        self.updateCheckState = .failed
+                    }
+                } else {
+                    await MainActor.run { [weak self] in
+                        self?.isCheckingForUpdates = false
+                    }
+                }
+            }
+        }
     }
 
     private func synchronize(queueIfBusy: Bool = false, showProgress: Bool = false) {

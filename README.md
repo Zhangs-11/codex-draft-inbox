@@ -18,7 +18,7 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 - 点击“打开任务”跳回对应 Codex 会话，或在 Terminal 中恢复 Claude Code 会话。
 - 只有点击“已处理”才移除；打开、读过、草稿变空或任务结束都不会自动清除。
 - 通知默认隐藏草稿正文，可以在菜单栏面板底部主动开启预览。
-- 登录 macOS 后自动启动；异常退出会由 LaunchAgent 重新拉起。
+- 登录 macOS 后自动启动。
 - 手动刷新会显示加载状态；若后台同步正在运行，会排队补跑一次。
 - 所有状态保存在本机，不上传草稿，也不会自动发送任何消息。
 
@@ -36,7 +36,7 @@ Claude Code hooks ──────────┘                             
 - `.codex-plugin/plugin.json`、`hooks.json` 和 `skills/` 组成 Codex 插件。
 - `scripts/draft_inbox.py` 只读采集会话标题、草稿和最近一个 Turn 的状态，并维护本地待办。
 - `macos-app/` 是 SwiftUI 编写的原生菜单栏应用。
-- `~/Library/LaunchAgents/com.zhangshuo.codex-draft-inbox.plist` 负责登录自启动。
+- macOS 13+ 的 `SMAppService.mainApp` 负责登录自启动；旧版 LaunchAgent 会在升级时停止并移出 `~/Library/LaunchAgents`。
 
 ## 适配环境
 
@@ -78,16 +78,16 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 
 #### 使用 GitHub Release
 
-从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载 `Codex-Draft-Inbox-v0.2.2-macos-universal.zip` 和同名 `.sha256` 文件。安装包同时包含 `arm64` 与 `x86_64`，可用于 Apple 芯片和 Intel Mac。先在下载目录校验：
+从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载最新的 `Codex-Draft-Inbox-v<版本>-macos-universal.zip` 和同名 `.sha256` 文件。安装包同时包含 `arm64` 与 `x86_64`，可用于 Apple 芯片和 Intel Mac。先在下载目录校验（把 `<版本>` 替换为实际版本号）：
 
 ```bash
-shasum -a 256 -c Codex-Draft-Inbox-v0.2.2-macos-universal.zip.sha256
+shasum -a 256 -c Codex-Draft-Inbox-v<版本>-macos-universal.zip.sha256
 ```
 
 解压后运行：
 
 ```bash
-cd "Codex Draft Inbox v0.2.2"
+cd "Codex Draft Inbox v<版本>"
 ./scripts/install_release.sh
 ```
 
@@ -108,7 +108,7 @@ cd "Codex Draft Inbox v0.2.2"
 脚本会完成以下操作：
 
 - 构建并签名 `~/Applications/Codex Draft Inbox.app`；
-- 写入当前用户的 LaunchAgent；
+- 通过 macOS `SMAppService` 注册登录自启动；
 - 启动菜单栏应用。
 
 如果缺少 Swift 工具链，先运行：
@@ -162,9 +162,15 @@ Codex 中也可以直接询问“哪些会话还没处理”或要求打开、�
 ~/.codex/draft-inbox/settings.json
 ```
 
-程序会只读访问 Codex 的本地草稿状态、会话 SQLite 数据库和 rollout 日志，以取得标题、真实会话 ID 和执行状态；不会写入 Codex 数据库。它不会连接外部服务，也不会上传或自动发送草稿。通知默认不显示草稿正文；开启“通知显示草稿”后，只显示截断后的预览。待办更新前会保留最后一份有效备份，主状态文件损坏时自动恢复。
+程序会只读访问 Codex 的本地草稿状态、会话 SQLite 数据库和 rollout 日志，以取得标题、真实会话 ID 和执行状态；不会写入 Codex 数据库。除每天检查一次新版本外，它不会连接外部服务；版本检查只访问 GitHub Releases API，不会上传待办、草稿或会话内容，也不会自动发送草稿。通知默认不显示草稿正文；开启“通知显示草稿”后，只显示截断后的预览。待办更新前会保留最后一份有效备份，主状态文件损坏时自动恢复。
 
 ## 更新
+
+从 v0.2.3 开始，菜单栏 App 每 24 小时检查一次 GitHub Release。发现新版本后，面板顶部会显示升级提示；也可以点击底部的“检查更新”立即检查。App 只会打开对应的 GitHub Release 页面，不会静默下载或安装。
+
+首次安装或从旧版 LaunchAgent 迁移时，macOS 可能显示一次登录项系统通知，因为菜单栏 App 会注册为登录后自动启动。这是 macOS 的透明性提示，应用无法静默关闭；迁移完成后的更新不会再创建新的 legacy 后台项目。
+
+v0.2.2 及更早版本还没有更新检测，需要先手动下载新版 Release 并重新运行安装脚本；原有待办和设置会保留。更新提示检查的是菜单栏 App，Codex 插件仍需通过 marketplace 单独升级。从源码安装时可以执行：
 
 ```bash
 git pull
@@ -177,7 +183,7 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 
 ## 卸载
 
-默认卸载 App、LaunchAgent、Claude Hooks 和公开 marketplace 插件，但保留本地待办数据：
+默认卸载 App、登录项、旧版 LaunchAgent、Claude Hooks 和公开 marketplace 插件，但保留本地待办数据：
 
 ```bash
 ./scripts/uninstall.sh
