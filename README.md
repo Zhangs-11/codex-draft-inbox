@@ -12,8 +12,11 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 - 会话启动后立即进入待办；有非空草稿的 Codex 会话也一定展示。
 - 卡片显示真实会话标题，下面显示当前草稿；没有草稿时显示等待处理提示。
 - 黄色状态条表示执行中或仅有草稿，绿色表示当前 Turn 已完成。
+- 已归档、已删除、不可见或暂时无法确认的 Codex 会话继续保留，并在标题旁显示标记。
+- 按最后活动时间排序；旧待办产生新 Turn 或新草稿后会回到顶部。
 - 点击“打开任务”跳回对应 Codex 会话，或在 Terminal 中恢复 Claude Code 会话。
 - 只有点击“已处理”才移除；打开、读过、草稿变空或任务结束都不会自动清除。
+- 通知默认隐藏草稿正文，可以在菜单栏面板底部主动开启预览。
 - 登录 macOS 后自动启动；异常退出会由 LaunchAgent 重新拉起。
 - 所有状态保存在本机，不上传草稿，也不会自动发送任何消息。
 
@@ -49,6 +52,8 @@ Claude Code hooks ──────────┘                             
 
 ## 安装
 
+Codex 插件与菜单栏 App 是两个组件。Codex 插件通过 marketplace 安装；菜单栏 App 可以下载 GitHub Release，也可以从源码构建。
+
 ### 1. 克隆仓库
 
 ```bash
@@ -69,6 +74,25 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 
 ### 3. 安装菜单栏应用
 
+#### 使用 GitHub Release
+
+从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载 `Codex-Draft-Inbox-v0.2.0-macos.zip`，解压后运行：
+
+```bash
+cd "Codex Draft Inbox v0.2.0"
+./scripts/install_release.sh
+```
+
+同时接入 Claude Code：
+
+```bash
+./scripts/install_release.sh --with-claude
+```
+
+当前 Release 使用本地 ad-hoc 签名，属于开源预览版，并未经过 Apple Developer ID 公证。压缩包同时提供 SHA-256 文件用于校验完整性。Release 不重新分发第三方 Logo，因此使用通用分组图标；从源码构建时才会尝试读取本机已安装 App 的官方图标。
+
+#### 从源码构建
+
 ```bash
 ./scripts/install_macos_app.sh
 ```
@@ -85,7 +109,7 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 xcode-select --install
 ```
 
-### 4. 接入 Claude Code（可选）
+### 4. 从源码接入 Claude Code（可选）
 
 先安装菜单栏应用，再执行：
 
@@ -105,6 +129,8 @@ xcode-select --install
 4. 点击“打开任务”回到原会话，结合上一轮结果继续处理。
 5. 确认不再需要跟进后，点击“已处理”。
 
+如果 Codex 会话后来被归档或删除，它仍会留在待办中并显示相应标记。已删除和不可见会话不能再打开，但仍可手动标记“已处理”。
+
 Codex 中也可以直接询问“哪些会话还没处理”或要求打开、清理某个待办，插件内的 `draft-inbox` Skill 会读取同一份本地列表。
 
 ## Codex 与 Claude Code 的差异
@@ -114,7 +140,7 @@ Codex 中也可以直接询问“哪些会话还没处理”或要求打开、�
 | 会话标题 | 读取 Codex 本地会话信息 | 使用最近一条已发送消息生成预览 |
 | 未发送草稿 | 读取 Codex 客户端已有草稿 | 终端输入框不可读取，需要在菜单栏卡片中保存 |
 | 执行状态 | 读取最近一个 Turn 的 rollout 状态 | 由 Claude Code 生命周期 Hook 同步 |
-| 打开会话 | 使用 `codex://threads/<id>` | 使用 `claude --resume <session-id>` |
+| 打开会话 | 使用 `codex://threads/<id>` | 已完成会话使用 `claude --resume <session-id>`；运行中只激活 Terminal |
 
 ## 状态与隐私
 
@@ -122,11 +148,13 @@ Codex 中也可以直接询问“哪些会话还没处理”或要求打开、�
 
 ```text
 ~/.codex/draft-inbox/pending.json
+~/.codex/draft-inbox/pending.json.bak
 ~/.codex/draft-inbox/observed.json
 ~/.codex/draft-inbox/claude.json
+~/.codex/draft-inbox/settings.json
 ```
 
-程序会只读访问 Codex 的本地草稿状态、会话 SQLite 数据库和 rollout 日志，以取得标题、真实会话 ID 和执行状态；不会写入 Codex 数据库。它不会连接外部服务，也不会上传或自动发送草稿。macOS 通知只显示截断后的草稿预览。
+程序会只读访问 Codex 的本地草稿状态、会话 SQLite 数据库和 rollout 日志，以取得标题、真实会话 ID 和执行状态；不会写入 Codex 数据库。它不会连接外部服务，也不会上传或自动发送草稿。通知默认不显示草稿正文；开启“通知显示草稿”后，只显示截断后的预览。待办更新前会保留最后一份有效备份，主状态文件损坏时自动恢复。
 
 ## 更新
 
@@ -139,6 +167,22 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 
 如果使用 Claude Code，菜单栏 App 更新后 Hook 会继续指向 App 内置的同步脚本，无需重复安装。
 
+## 卸载
+
+默认卸载 App、LaunchAgent、Claude Hooks 和公开 marketplace 插件，但保留本地待办数据：
+
+```bash
+./scripts/uninstall.sh
+```
+
+同时删除 `~/.codex/draft-inbox/` 中的待办和设置：
+
+```bash
+./scripts/uninstall.sh --purge-data
+```
+
+卸载脚本只移除本项目写入的 Claude Hooks，并保留 `settings.json` 中的其他 Hook 和配置。
+
 ## 验证与开发
 
 ```bash
@@ -147,7 +191,7 @@ python3 scripts/draft_inbox.py list --json
 ./scripts/test_macos_app.sh
 ```
 
-插件开发者还可以使用 Codex 自带的 `plugin-creator` Skill 校验插件清单。
+GitHub Actions 会在 Python 3.9、Python 3.13 和 Swift 6 环境重复执行兼容测试。插件开发者还可以使用 Codex 自带的 `plugin-creator` Skill 校验插件清单。
 
 ## 已知限制
 
@@ -155,6 +199,8 @@ python3 scripts/draft_inbox.py list --json
 - 无法读取 Claude Code 终端中尚未按回车的文本。
 - 状态颜色表示最近一个 Turn 的运行状态，不代表你是否已经阅读。
 - Codex 客户端本地状态结构升级后可能需要跟进适配。
+- Claude Code 运行中的会话只能激活 Terminal，不能精确定位原终端窗口。
+- 菜单栏空间不足时，macOS 可能临时隐藏图标；可按住 `Command` 将图标拖到更靠右的位置。
 - 当前使用本地 ad-hoc 签名，不是经过 Apple Developer ID 公证的分发包；首次运行若被系统拦截，需要在“系统设置 → 隐私与安全性”中确认。
 
 ## License

@@ -4,5 +4,6 @@ __pycache__/
 .build/
 macos-app/.build/
 *.tmp
+dist/
 macos-app/AppResources/codex-logo.png
 macos-app/AppResources/claude-logo.png

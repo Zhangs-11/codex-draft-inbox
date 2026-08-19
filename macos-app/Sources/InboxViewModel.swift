@@ -7,6 +7,7 @@ import Foundation
 final class InboxViewModel: ObservableObject {
     @Published private(set) var items: [PendingItem] = []
     @Published private(set) var errorMessage: String?
+    @Published private(set) var notificationDraftPreviewEnabled = false
 
     private let repository: InboxRepository
     private let syncService: DraftSyncService?
@@ -22,8 +23,9 @@ final class InboxViewModel: ObservableObject {
         self.syncService = syncService
         reload()
         synchronize()
+        loadSettings()
         if startsPolling {
-            timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.synchronize() }
             }
         }
@@ -42,6 +44,10 @@ final class InboxViewModel: ObservableObject {
         }
     }
 
+    func refresh() {
+        synchronize()
+    }
+
     private func synchronize() {
         guard !syncInFlight, let syncService else {
             reload()
@@ -49,10 +55,45 @@ final class InboxViewModel: ObservableObject {
         }
         syncInFlight = true
         Task.detached {
-            try? syncService.synchronize()
+            let syncFailed: Bool
+            do {
+                try syncService.synchronize()
+                syncFailed = false
+            } catch {
+                syncFailed = true
+            }
             await MainActor.run { [weak self] in
                 self?.syncInFlight = false
                 self?.reload()
+                if syncFailed {
+                    self?.errorMessage = "同步失败，当前显示的是上次保存的待办"
+                }
+            }
+        }
+    }
+
+    private func loadSettings() {
+        guard let syncService else { return }
+        Task.detached {
+            let enabled = (try? syncService.notificationDraftPreviewEnabled()) ?? false
+            await MainActor.run { [weak self] in
+                self?.notificationDraftPreviewEnabled = enabled
+            }
+        }
+    }
+
+    func setNotificationDraftPreview(enabled: Bool) {
+        guard let syncService else { return }
+        Task.detached {
+            do {
+                try syncService.setNotificationDraftPreview(enabled: enabled)
+                await MainActor.run { [weak self] in
+                    self?.notificationDraftPreviewEnabled = enabled
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = "通知隐私设置保存失败"
+                }
             }
         }
     }
@@ -96,9 +137,7 @@ final class InboxViewModel: ObservableObject {
                 return
             }
             let cwd = item.cwd?.isEmpty == false ? item.cwd! : FileManager.default.homeDirectoryForCurrentUser.path
-            let claude = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".local/bin/claude").path
-            let command = "cd \(shellQuote(cwd)) && \(shellQuote(claude)) --resume \(shellQuote(sessionID))"
+            let command = "cd \(shellQuote(cwd)) && if command -v claude >/dev/null 2>&1; then claude --resume \(shellQuote(sessionID)); else echo '未找到 claude，请先安装 Claude Code 或检查 PATH'; fi"
             let script = "tell application \"Terminal\" to do script \(appleScriptQuote(command))\ntell application \"Terminal\" to activate"
             process.arguments = ["-e", script]
         }
@@ -122,8 +161,14 @@ final class InboxViewModel: ObservableObject {
     func markHandled(_ item: PendingItem) {
         if let syncService {
             Task.detached {
-                try? syncService.markHandled(threadID: item.threadID)
-                await MainActor.run { [weak self] in self?.reload() }
+                do {
+                    try syncService.markHandled(threadID: item.threadID)
+                    await MainActor.run { [weak self] in self?.reload() }
+                } catch {
+                    await MainActor.run { [weak self] in
+                        self?.errorMessage = "标记失败，请稍后再试"
+                    }
+                }
             }
             return
         }

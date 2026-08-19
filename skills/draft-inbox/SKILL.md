@@ -15,7 +15,7 @@ description: 查看、跳转或清理 Codex 与 Claude Code 中尚未处理的�
 python3 <plugin-root>/scripts/draft_inbox.py list --json
 ```
 
-按完成时间从新到旧展示任务名称、草稿原文和任务 ID。不要读取或展示 `.codex-global-state.json` 中与这些待办无关的内容。
+按最后活动时间从新到旧展示任务名称、草稿原文、执行状态、会话可用性和任务 ID。`archived`、`deleted`、`unavailable`、`unknown` 分别说明会话已归档、已删除、不可见或暂时无法确认；这些状态不等于已经处理。不要读取或展示 `.codex-global-state.json` 中与这些待办无关的内容。
 
 ## 跳转任务
 

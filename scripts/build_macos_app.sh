@@ -19,10 +19,14 @@ BIN_PATH=$(swift build \
     -c release \
     --show-bin-path)
 
+rm -rf -- "$APP_PATH"
 install -d "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 install -m 755 "$BIN_PATH/CodexDraftInbox" "$APP_PATH/Contents/MacOS/CodexDraftInbox"
 install -m 644 "$PACKAGE_ROOT/AppResources/Info.plist" "$APP_PATH/Contents/Info.plist"
 install -m 644 "$PLUGIN_ROOT/scripts/draft_inbox.py" "$APP_PATH/Contents/Resources/draft_inbox.py"
+install -m 644 \
+    "$PACKAGE_ROOT/AppResources/com.zhangshuo.codex-draft-inbox.plist" \
+    "$APP_PATH/Contents/Resources/com.zhangshuo.codex-draft-inbox.plist"
 
 install_logo() {
     destination=$1
@@ -35,14 +39,16 @@ install_logo() {
     done
 }
 
-install_logo "codex-logo.png" \
-    "$PACKAGE_ROOT/AppResources/codex-logo.png" \
-    "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png" \
-    "$HOME/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png"
-install_logo "claude-logo.png" \
-    "$PACKAGE_ROOT/AppResources/claude-logo.png" \
-    "/Applications/Claude.app/Contents/Resources/ion-dist/images/claude_app_icon.png" \
-    "$HOME/Applications/Claude.app/Contents/Resources/ion-dist/images/claude_app_icon.png"
+if [ "${CODEX_DRAFT_INBOX_SKIP_BRAND_ASSETS:-0}" != "1" ]; then
+    install_logo "codex-logo.png" \
+        "$PACKAGE_ROOT/AppResources/codex-logo.png" \
+        "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png" \
+        "$HOME/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png"
+    install_logo "claude-logo.png" \
+        "$PACKAGE_ROOT/AppResources/claude-logo.png" \
+        "/Applications/Claude.app/Contents/Resources/ion-dist/images/claude_app_icon.png" \
+        "$HOME/Applications/Claude.app/Contents/Resources/ion-dist/images/claude_app_icon.png"
+fi
 codesign --force --deep --sign - "$APP_PATH" >/dev/null
 
 echo "$APP_PATH"

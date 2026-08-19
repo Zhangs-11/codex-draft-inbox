@@ -54,6 +54,26 @@ class InstallClaudeHooksTests(unittest.TestCase):
             self.assertIn(str(script_path), command)
             self.assertTrue(command.endswith(" claude-event"))
 
+    def test_uninstall_removes_only_draft_inbox_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings_path = root / "settings.json"
+            script_path = root / "draft_inbox.py"
+            script_path.write_text("# test\n", encoding="utf-8")
+            settings_path.write_text(
+                json.dumps({"theme": "dark", "hooks": {"Stop": [{"hooks": [{"command": "echo keep"}]}]}}),
+                encoding="utf-8",
+            )
+            MODULE.install_hooks(settings_path, script_path)
+
+            self.assertTrue(MODULE.uninstall_hooks(settings_path))
+
+            payload = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["theme"], "dark")
+            self.assertEqual(payload["hooks"]["Stop"], [{"hooks": [{"command": "echo keep"}]}])
+            self.assertNotIn("SessionStart", payload["hooks"])
+            self.assertNotIn("UserPromptSubmit", payload["hooks"])
+
 
 if __name__ == "__main__":
     unittest.main()

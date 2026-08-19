@@ -7,6 +7,7 @@ struct InboxRepositorySelfTests {
     static func main() {
         do {
             try loadsNewestItemsFirst()
+            try loadsLegacyItemsWithoutActivityTimestamp()
             try markHandledRemovesOnlySelectedItem()
             try missingStateIsEmpty()
             print("CodexDraftInbox self-test passed")
@@ -24,14 +25,32 @@ struct InboxRepositorySelfTests {
             version: 1,
             items: [
                 "older": item(id: "older", completedAt: "2026-08-19T09:00:00Z"),
-                "newer": item(id: "newer", completedAt: "2026-08-19T10:00:00Z"),
+                "newer": item(
+                    id: "newer",
+                    completedAt: "2026-08-19T08:00:00Z",
+                    lastActivityAt: "2026-08-19T10:00:00Z"
+                ),
             ]
         )
         try JSONEncoder().encode(inbox).write(to: stateURL)
 
         let items = try InboxRepository(stateURL: stateURL).load()
 
-        try expect(items.map(\.threadID) == ["newer", "older"], "待办没有按完成时间倒序排列")
+        try expect(items.map(\.threadID) == ["newer", "older"], "待办没有按最近活动时间倒序排列")
+    }
+
+    private static func loadsLegacyItemsWithoutActivityTimestamp() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = directory.appendingPathComponent("pending.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let legacy = """
+        {"version":1,"items":{"legacy":{"thread_id":"legacy","title":"旧待办","draft":"","completed_at":"2026-08-19T09:00:00Z"}}}
+        """
+        try Data(legacy.utf8).write(to: stateURL)
+
+        let items = try InboxRepository(stateURL: stateURL).load()
+
+        try expect(items.first?.threadID == "legacy", "旧版待办状态无法兼容读取")
     }
 
     private static func markHandledRemovesOnlySelectedItem() throws {
@@ -61,13 +80,14 @@ struct InboxRepositorySelfTests {
         try expect(try InboxRepository(stateURL: stateURL).load() == [], "缺失状态文件时没有返回空列表")
     }
 
-    private static func item(id: String, completedAt: String) -> PendingItem {
+    private static func item(id: String, completedAt: String, lastActivityAt: String? = nil) -> PendingItem {
         PendingItem(
             threadID: id,
             title: "任务 \(id)",
             draft: "继续处理 \(id)",
             draftKey: "local:\(id)",
-            completedAt: completedAt
+            completedAt: completedAt,
+            lastActivityAt: lastActivityAt
         )
     }
 

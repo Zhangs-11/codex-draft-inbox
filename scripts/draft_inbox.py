@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain a local inbox for completed Codex tasks with unsent drafts."""
+"""Maintain the local Codex and Claude Code conversation inbox."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -20,10 +21,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 NOTIFICATION_PREVIEW_LENGTH = 180
 ROLLOUT_TAIL_LIMIT_BYTES = 2 * 1024 * 1024
 TERMINAL_TURN_EVENTS = {"task_complete", "turn_aborted", "turn_failed", "task_failed"}
+DEFAULT_SETTINGS = {"version": 1, "show_notification_draft_preview": False}
 
 
 def _codex_home() -> Path:
@@ -55,6 +57,11 @@ def _claude_state_path() -> Path:
     return Path(override).expanduser() if override else _codex_home() / "draft-inbox" / "claude.json"
 
 
+def _settings_path() -> Path:
+    override = os.environ.get("CODEX_DRAFT_INBOX_SETTINGS_PATH")
+    return Path(override).expanduser() if override else _codex_home() / "draft-inbox" / "settings.json"
+
+
 def _read_json(path: Path, default: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -62,8 +69,56 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_settings() -> dict[str, Any]:
+    payload = _read_json(_settings_path(), DEFAULT_SETTINGS)
+    if not isinstance(payload, dict):
+        payload = dict(DEFAULT_SETTINGS)
+    return {
+        "version": 1,
+        "show_notification_draft_preview": bool(payload.get("show_notification_draft_preview", False)),
+    }
+
+
+def set_notification_draft_preview(enabled: bool) -> bool:
+    path = _settings_path()
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            previous = _load_settings()
+            payload = {"version": 1, "show_notification_draft_preview": enabled}
+            if previous == payload and path.is_file():
+                return False
+            _write_json_atomic(path, payload)
+            return True
+        finally:
+            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _empty_state() -> dict[str, Any]:
     return {"version": STATE_VERSION, "items": {}}
+
+
+def _valid_pending_state(path: Path) -> dict[str, Any] | None:
+    payload = _read_json(path, None)
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), dict):
+        return None
+    return payload
+
+
+def _load_pending_state(path: Path) -> tuple[dict[str, Any], bool]:
+    primary = _valid_pending_state(path)
+    if primary is not None:
+        return primary, False
+    backup = _valid_pending_state(path.with_suffix(path.suffix + ".bak"))
+    if backup is not None:
+        return backup, True
+    return _empty_state(), False
 
 
 @contextmanager
@@ -74,16 +129,18 @@ def _locked_state() -> Iterator[tuple[Path, dict[str, Any]]]:
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            state = _read_json(path, _empty_state())
-            if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
-                state = _empty_state()
+            state, recovered = _load_pending_state(path)
+            if recovered:
+                _write_state(path, state, backup_existing=False)
             yield path, state
         finally:
             fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _write_state(path: Path, state: dict[str, Any]) -> None:
+def _write_state(path: Path, state: dict[str, Any], *, backup_existing: bool = True) -> None:
     state["version"] = STATE_VERSION
+    if backup_existing and _valid_pending_state(path) is not None:
+        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
     with tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
@@ -311,6 +368,12 @@ def _normalize_preview(text: str, limit: int = NOTIFICATION_PREVIEW_LENGTH) -> s
     return compact if len(compact) <= limit else compact[: limit - 1] + "…"
 
 
+def _notification_body(draft: str, fallback: str) -> str:
+    if draft.strip() and _load_settings()["show_notification_draft_preview"]:
+        return f"草稿：{_normalize_preview(draft)}"
+    return fallback
+
+
 def _apple_script_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
@@ -375,37 +438,41 @@ def capture(payload: dict[str, Any], *, remember: bool = True) -> bool:
         time.sleep(0.1)
     draft_key, draft = draft_entry if draft_entry is not None else ("", "")
     title = _thread_title(thread_id)
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now_iso()
     turn_id = payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else "unknown"
     token = f"turn:{turn_id}:{_draft_fingerprint(draft)}"
+    created = False
 
     def add_item(state: dict[str, Any]) -> bool:
+        nonlocal created
         existing = state["items"].get(thread_id)
-        if isinstance(existing, dict):
-            existing.update({
-                "title": title,
-                "draft": draft,
-                "draft_key": draft_key,
-                "status": "completed",
-                "observation_token": token,
-                "source": "codex",
-            })
-            return False
-        state["items"][thread_id] = {
-            "thread_id": thread_id,
+        fields = {
             "title": title,
             "draft": draft,
             "draft_key": draft_key,
-            "completed_at": now,
             "status": "completed",
             "observation_token": token,
             "source": "codex",
+            "lifecycle": _thread_metadata(thread_id)["lifecycle"],
+        }
+        if isinstance(existing, dict):
+            if all(existing.get(key) == value for key, value in fields.items()):
+                return False
+            existing.update(fields)
+            existing["last_activity_at"] = now
+            return True
+        created = True
+        state["items"][thread_id] = {
+            "thread_id": thread_id,
+            "completed_at": now,
+            "last_activity_at": now,
+            **fields,
         }
         return True
 
     changed = _mutate_state(add_item)
-    if changed:
-        body = f"草稿：{_normalize_preview(draft)}" if draft else "任务已完成，等待你处理"
+    if created:
+        body = _notification_body(draft, "任务已完成，等待你处理")
         _notify(body, subtitle=title)
     if remember:
         _remember_observation(thread_id, token, "hook")
@@ -543,6 +610,10 @@ def _normalize_pending_thread_ids() -> None:
                     existing["draft_key"] = moved.get("draft_key", "")
                 if moved.get("status") == "running":
                     existing["status"] = "running"
+                moved_activity = str(moved.get("last_activity_at") or moved.get("completed_at") or "")
+                existing_activity = str(existing.get("last_activity_at") or existing.get("completed_at") or "")
+                if moved_activity > existing_activity:
+                    existing["last_activity_at"] = moved_activity
                 existing["title"] = _thread_title(normalized)
             else:
                 items[normalized] = moved
@@ -570,7 +641,7 @@ def _upsert_external_pending(
     external_session_id: str,
     cwd: str,
 ) -> bool:
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now_iso()
 
     def update(state: dict[str, Any]) -> bool:
         existing = state["items"].get(thread_id)
@@ -580,8 +651,8 @@ def _upsert_external_pending(
             "draft_key": f"claude:{external_session_id}",
             "status": status,
             "observation_token": token,
-            "source": "codex",
             "source": "claude",
+            "lifecycle": "active",
             "external_session_id": external_session_id,
             "cwd": cwd,
         }
@@ -589,10 +660,12 @@ def _upsert_external_pending(
             if all(existing.get(key) == value for key, value in fields.items()):
                 return False
             existing.update(fields)
+            existing["last_activity_at"] = now
             return True
         state["items"][thread_id] = {
             "thread_id": thread_id,
             "completed_at": now,
+            "last_activity_at": now,
             **fields,
         }
         return True
@@ -706,29 +779,49 @@ def set_claude_draft(thread_id: str, text: str) -> bool:
     )
 
 
-def _thread_is_visible(thread_id: str) -> bool:
+def _thread_metadata(thread_id: str) -> dict[str, Any]:
     db_path = _thread_db_path()
     if not db_path.is_file():
-        return False
+        return {"lifecycle": "unknown", "updated_at_ms": 0}
     try:
         connection = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True, timeout=1)
         try:
             row = connection.execute(
-                "SELECT 1 FROM threads WHERE id = ? AND archived = 0 AND preview <> ''",
+                "SELECT archived, preview, updated_at_ms FROM threads WHERE id = ?",
                 (thread_id,),
             ).fetchone()
         finally:
             connection.close()
     except sqlite3.Error:
-        return False
-    return row is not None
+        return {"lifecycle": "unknown", "updated_at_ms": 0}
+    if row is None:
+        return {"lifecycle": "deleted", "updated_at_ms": 0}
+    archived, preview, updated_at_ms = row
+    if int(archived or 0) != 0:
+        lifecycle = "archived"
+    elif not str(preview or "").strip():
+        lifecycle = "unavailable"
+    else:
+        lifecycle = "active"
+    return {"lifecycle": lifecycle, "updated_at_ms": int(updated_at_ms or 0)}
 
 
-def _remove_non_user_pending(thread_id: str) -> None:
-    def remove(state: dict[str, Any]) -> bool:
-        return state["items"].pop(thread_id, None) is not None
+def _update_pending_lifecycle(thread_id: str, lifecycle: str) -> bool:
+    def update(state: dict[str, Any]) -> bool:
+        existing = state["items"].get(thread_id)
+        if not isinstance(existing, dict) or existing.get("lifecycle") == lifecycle:
+            return False
+        previous_lifecycle = existing.get("lifecycle")
+        existing["lifecycle"] = lifecycle
+        if previous_lifecycle is None:
+            existing["last_activity_at"] = str(
+                existing.get("last_activity_at") or existing.get("completed_at") or _now_iso()
+            )
+        else:
+            existing["last_activity_at"] = _now_iso()
+        return True
 
-    _mutate_state(remove)
+    return _mutate_state(update)
 
 
 def _upsert_pending(
@@ -738,27 +831,39 @@ def _upsert_pending(
     draft: str,
     status: str,
     token: str,
+    lifecycle: str,
 ) -> bool:
-    title = _thread_title(thread_id)
-    now = datetime.now(timezone.utc).isoformat()
+    resolved_title = _thread_title(thread_id)
+    now = _now_iso()
 
     def update(state: dict[str, Any]) -> bool:
         existing = state["items"].get(thread_id)
+        title = resolved_title
+        if (
+            isinstance(existing, dict)
+            and lifecycle != "active"
+            and (not title or title == thread_id)
+        ):
+            title = str(existing.get("title") or thread_id)
         fields = {
             "title": title,
             "draft": draft,
             "draft_key": draft_key,
             "status": status,
             "observation_token": token,
+            "lifecycle": lifecycle,
+            "source": "codex",
         }
         if isinstance(existing, dict):
             if all(existing.get(key) == value for key, value in fields.items()):
                 return False
             existing.update(fields)
+            existing["last_activity_at"] = now
             return True
         state["items"][thread_id] = {
             "thread_id": thread_id,
             "completed_at": now,
+            "last_activity_at": now,
             **fields,
         }
         return True
@@ -821,11 +926,12 @@ def sync_pending_drafts() -> int:
 
             for thread_id in candidates:
                 draft_key, draft = drafts.get(thread_id, ("", ""))
-                if not draft and not _thread_is_visible(thread_id):
-                    if thread_id in pending:
-                        _remove_non_user_pending(thread_id)
-                        pending.pop(thread_id, None)
-                    observed_threads.pop(thread_id, None)
+                metadata = _thread_metadata(thread_id)
+                lifecycle = str(metadata["lifecycle"])
+                already_pending = thread_id in codex_pending
+                if already_pending:
+                    _update_pending_lifecycle(thread_id, lifecycle)
+                elif not draft and lifecycle != "active":
                     continue
                 marker = _latest_turn_marker(thread_id)
                 if marker:
@@ -850,7 +956,6 @@ def sync_pending_drafts() -> int:
                 if previous_token != token:
                     dismissed_token = None
 
-                already_pending = thread_id in codex_pending
                 should_show = (
                     already_pending
                     or bool(draft)
@@ -874,10 +979,11 @@ def sync_pending_drafts() -> int:
                     draft=draft,
                     status=status,
                     token=token,
+                    lifecycle=lifecycle,
                 )
                 if not already_pending:
                     captured += 1
-                    body = f"草稿：{_normalize_preview(draft)}" if draft else "任务已启动，等待你处理"
+                    body = _notification_body(draft, "任务已启动，等待你处理")
                     _notify(body, subtitle=_thread_title(thread_id))
                     codex_pending[thread_id] = {"thread_id": thread_id}
                 observed_threads[thread_id] = {
@@ -918,12 +1024,16 @@ def clear(thread_id: str, *, manual: bool = False) -> bool:
 
 
 def pending_items() -> list[dict[str, Any]]:
-    state = _read_json(_inbox_path(), _empty_state())
+    state, _ = _load_pending_state(_inbox_path())
     items = state.get("items", {}) if isinstance(state, dict) else {}
     if not isinstance(items, dict):
         return []
     valid_items = [item for item in items.values() if isinstance(item, dict)]
-    return sorted(valid_items, key=lambda item: str(item.get("completed_at", "")), reverse=True)
+    return sorted(
+        valid_items,
+        key=lambda item: str(item.get("last_activity_at") or item.get("completed_at", "")),
+        reverse=True,
+    )
 
 
 def remind(payload: dict[str, Any]) -> None:
@@ -934,13 +1044,15 @@ def remind(payload: dict[str, Any]) -> None:
     current = next((item for item in items if item.get("thread_id") == current_thread), None)
     if current:
         _notify(
-            f"待处理草稿：{_normalize_preview(str(current.get('draft', '')))}",
+            _notification_body(str(current.get("draft", "")), "当前会话仍在待办中"),
             subtitle=str(current.get("title", current_thread)),
         )
         return
     newest = items[0]
+    newest_draft = str(newest.get("draft", ""))
+    fallback = f"还有 {len(items)} 个会话待办"
     _notify(
-        f"还有 {len(items)} 个草稿待办；最近：{_normalize_preview(str(newest.get('draft', '')), 120)}",
+        _notification_body(newest_draft, fallback),
         subtitle=str(newest.get("title", "")),
     )
 
@@ -954,8 +1066,9 @@ def render_markdown(items: list[dict[str, Any]]) -> str:
             [
                 f"- {item.get('title') or item.get('thread_id')}",
                 f"  - 草稿：{_normalize_preview(str(item.get('draft', '')), 500)}",
+                f"  - 会话状态：{item.get('lifecycle', 'active')}",
                 f"  - task_id：`{item.get('thread_id', '')}`",
-                f"  - 完成时间：{item.get('completed_at', '')}",
+                f"  - 最近活动：{item.get('last_activity_at') or item.get('completed_at', '')}",
             ]
         )
     return "\n".join(lines)
@@ -968,6 +1081,10 @@ def main() -> int:
     subparsers.add_parser("remind")
     subparsers.add_parser("sync")
     subparsers.add_parser("claude-event")
+    settings_parser = subparsers.add_parser("settings")
+    settings_parser.add_argument("--json", action="store_true")
+    preview_parser = subparsers.add_parser("set-notification-preview")
+    preview_parser.add_argument("--enabled", choices=("true", "false"), required=True)
     claude_draft_parser = subparsers.add_parser("set-claude-draft")
     claude_draft_parser.add_argument("--thread-id", required=True)
     claude_draft_parser.add_argument("--text", default="")
@@ -981,6 +1098,15 @@ def main() -> int:
     if args.command == "list":
         items = pending_items()
         print(json.dumps(items, ensure_ascii=False, indent=2) if args.json else render_markdown(items))
+        return 0
+
+    if args.command == "settings":
+        settings = _load_settings()
+        print(json.dumps(settings, ensure_ascii=False, indent=2) if args.json else settings)
+        return 0
+
+    if args.command == "set-notification-preview":
+        set_notification_draft_preview(args.enabled == "true")
         return 0
 
     if args.command == "sync":

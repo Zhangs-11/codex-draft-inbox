@@ -39,9 +39,11 @@ struct InboxPanel: View {
             }
 
             Divider().opacity(0.55)
+            notificationPrivacy
+            Divider().opacity(0.55)
             footer
         }
-        .frame(width: 410, height: 470)
+        .frame(width: 410, height: 500)
         .background(.regularMaterial)
     }
 
@@ -76,7 +78,7 @@ struct InboxPanel: View {
             }
 
             Button {
-                viewModel.reload()
+                viewModel.refresh()
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 12, weight: .semibold))
@@ -147,6 +149,30 @@ struct InboxPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    private var notificationPrivacy: some View {
+        HStack(spacing: 10) {
+            Label("通知显示草稿", systemImage: "rectangle.inset.filled.and.person.filled")
+                .font(.system(size: 11, weight: .medium))
+            Text("关闭时锁屏通知只显示待办提醒")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+            Toggle(
+                "通知显示草稿",
+                isOn: Binding(
+                    get: { viewModel.notificationDraftPreviewEnabled },
+                    set: { viewModel.setNotificationDraftPreview(enabled: $0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     private var codexItems: [PendingItem] {
@@ -247,12 +273,20 @@ private struct InboxRow: View {
                     Text(item.title)
                         .font(.system(size: 13.5, weight: .semibold, design: .rounded))
                         .lineLimit(1)
+                    if let lifecycle = lifecycleBadge {
+                        Text(lifecycle.text)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(lifecycle.color)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(lifecycle.color.opacity(0.12), in: Capsule())
+                    }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(statusText(item.status))
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(statusColor)
-                        Text(relativeTime(item.completedAt))
+                        Text(relativeTime(item.effectiveActivityAt))
                             .font(.system(size: 9.5, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
@@ -280,6 +314,8 @@ private struct InboxRow: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(PrimaryActionStyle(accent: accent))
+                    .disabled(!canOpen)
+                    .opacity(canOpen ? 1 : 0.48)
 
                     Button(action: onHandled) {
                         Label("已处理", systemImage: "checkmark")
@@ -319,8 +355,24 @@ private struct InboxRow: View {
     }
 
     private var openButtonTitle: String {
+        if item.lifecycle == "deleted" { return "会话已删除" }
+        if item.lifecycle == "unavailable" { return "会话不可见" }
         guard item.source == "claude" else { return "打开任务" }
         return item.status == "running" ? "打开终端" : "恢复会话"
+    }
+
+    private var canOpen: Bool {
+        item.lifecycle != "deleted" && item.lifecycle != "unavailable"
+    }
+
+    private var lifecycleBadge: (text: String, color: Color)? {
+        switch item.lifecycle {
+        case "archived": ("已归档", Color.secondary)
+        case "deleted": ("已删除", Color.red)
+        case "unavailable": ("不可见", Color.secondary)
+        case "unknown": ("状态未知", Color.orange)
+        default: nil
+        }
     }
 }
 

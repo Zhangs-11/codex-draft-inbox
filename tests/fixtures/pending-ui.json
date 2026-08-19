@@ -1,0 +1,51 @@
+{
+  "version": 2,
+  "items": {
+    "active-thread": {
+      "thread_id": "active-thread",
+      "title": "修复支付接口超时问题",
+      "draft": "下一步请补充失败路径测试",
+      "draft_key": "local:active-thread",
+      "completed_at": "2026-08-20T08:00:00Z",
+      "last_activity_at": "2026-08-19T15:00:00Z",
+      "status": "running",
+      "lifecycle": "active",
+      "source": "codex"
+    },
+    "archived-thread": {
+      "thread_id": "archived-thread",
+      "title": "整理插件发布说明",
+      "draft": "",
+      "draft_key": "",
+      "completed_at": "2026-08-20T07:00:00Z",
+      "last_activity_at": "2026-08-19T14:00:00Z",
+      "status": "completed",
+      "lifecycle": "archived",
+      "source": "codex"
+    },
+    "deleted-thread": {
+      "thread_id": "deleted-thread",
+      "title": "已经删除的测试会话",
+      "draft": "确认是否还要保留这条记录",
+      "draft_key": "",
+      "completed_at": "2026-08-20T06:00:00Z",
+      "last_activity_at": "2026-08-19T13:00:00Z",
+      "status": "completed",
+      "lifecycle": "deleted",
+      "source": "codex"
+    },
+    "claude:demo": {
+      "thread_id": "claude:demo",
+      "title": "检查安装脚本兼容性",
+      "draft": "",
+      "draft_key": "claude:demo",
+      "completed_at": "2026-08-20T05:00:00Z",
+      "last_activity_at": "2026-08-19T12:00:00Z",
+      "status": "completed",
+      "lifecycle": "active",
+      "source": "claude",
+      "external_session_id": "demo",
+      "cwd": "/tmp/demo"
+    }
+  }
+}

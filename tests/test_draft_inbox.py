@@ -24,6 +24,7 @@ class DraftInboxTest(unittest.TestCase):
         self.inbox_state = self.root / "pending.json"
         self.observed_state = self.root / "observed.json"
         self.claude_state = self.root / "claude.json"
+        self.settings_state = self.root / "settings.json"
         self.rollout = self.root / "thread-1.jsonl"
         self.claude_transcript = self.root / "claude-session.jsonl"
         self.env = mock.patch.dict(
@@ -34,6 +35,7 @@ class DraftInboxTest(unittest.TestCase):
                 "CODEX_DRAFT_INBOX_STATE_PATH": str(self.inbox_state),
                 "CODEX_DRAFT_INBOX_OBSERVED_PATH": str(self.observed_state),
                 "CODEX_DRAFT_INBOX_CLAUDE_STATE_PATH": str(self.claude_state),
+                "CODEX_DRAFT_INBOX_SETTINGS_PATH": str(self.settings_state),
                 "CODEX_DRAFT_INBOX_DISABLE_NOTIFICATION": "1",
             },
         )
@@ -251,6 +253,91 @@ class DraftInboxTest(unittest.TestCase):
         self._write_rollout([self._turn_context("internal-turn")])
 
         self.assertEqual(draft_inbox.sync_pending_drafts(), 0)
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_archived_pending_stays_until_handled_and_is_marked(self):
+        self._write_drafts({})
+        self._write_rollout([self._turn_context("turn-1")])
+        self._set_thread_updated_at(int(__import__("time").time() * 1000))
+        draft_inbox.sync_pending_drafts()
+
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute("UPDATE threads SET archived = 1 WHERE id = 'thread-1'")
+        connection.commit()
+        connection.close()
+        draft_inbox.sync_pending_drafts()
+
+        item = draft_inbox.pending_items()[0]
+        self.assertEqual(item["lifecycle"], "archived")
+
+    def test_deleted_pending_stays_until_handled_and_is_marked(self):
+        self._write_drafts({})
+        self._write_rollout([self._turn_context("turn-1")])
+        self._set_thread_updated_at(int(__import__("time").time() * 1000))
+        draft_inbox.sync_pending_drafts()
+
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute("DELETE FROM threads WHERE id = 'thread-1'")
+        connection.commit()
+        connection.close()
+        draft_inbox.sync_pending_drafts()
+
+        item = draft_inbox.pending_items()[0]
+        self.assertEqual(item["title"], "测试任务")
+        self.assertEqual(item["lifecycle"], "deleted")
+
+    def test_pending_stays_when_database_is_temporarily_unavailable(self):
+        self._write_drafts({"local:thread-1": "保留待办"})
+        draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"})
+        self.thread_db.rename(self.root / "threads-offline.sqlite")
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual(draft_inbox.pending_items()[0]["lifecycle"], "unknown")
+
+    def test_recent_activity_moves_existing_pending_to_top(self):
+        self._write_drafts({"local:thread-1": "第一条"})
+        draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"})
+
+        second_rollout = self.root / "thread-2.jsonl"
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("thread-2", "", "第二条任务", str(second_rollout), 0, 2000, "消息"),
+        )
+        connection.commit()
+        connection.close()
+        self._write_drafts({"local:thread-2": "第二条"})
+        draft_inbox.capture({"session_id": "thread-2", "turn_id": "turn-1"})
+        self.assertEqual(draft_inbox.pending_items()[0]["thread_id"], "thread-2")
+
+        self._write_drafts({"local:thread-1": "第一条的新草稿"})
+        draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-2"})
+
+        self.assertEqual(draft_inbox.pending_items()[0]["thread_id"], "thread-1")
+
+    def test_notification_draft_preview_defaults_to_hidden_and_can_be_enabled(self):
+        self.assertFalse(draft_inbox._load_settings()["show_notification_draft_preview"])
+        self.assertEqual(draft_inbox._notification_body("秘密草稿", "普通提醒"), "普通提醒")
+
+        self.assertTrue(draft_inbox.set_notification_draft_preview(True))
+
+        self.assertTrue(draft_inbox._load_settings()["show_notification_draft_preview"])
+        self.assertEqual(draft_inbox._notification_body("秘密草稿", "普通提醒"), "草稿：秘密草稿")
+
+    def test_corrupt_pending_file_recovers_from_last_valid_backup(self):
+        self._write_drafts({"local:thread-1": "第一版草稿"})
+        draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"})
+        self._write_drafts({"local:thread-1": "第二版草稿"})
+        draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-2"})
+        self.assertTrue(self.inbox_state.with_suffix(".json.bak").is_file())
+        self.inbox_state.write_text("{broken", encoding="utf-8")
+
+        recovered = draft_inbox.pending_items()
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]["draft"], "第一版草稿")
+        self.assertTrue(draft_inbox.clear("thread-1", manual=True))
         self.assertEqual(draft_inbox.pending_items(), [])
 
     def test_title_prefers_database_conversation_title(self):

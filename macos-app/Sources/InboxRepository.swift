@@ -21,7 +21,7 @@ public struct InboxRepository {
 
     public func load() throws -> [PendingItem] {
         let inbox = try loadFile()
-        return inbox.items.values.sorted { $0.completedAt > $1.completedAt }
+        return inbox.items.values.sorted { $0.effectiveActivityAt > $1.effectiveActivityAt }
     }
 
     public func markHandled(threadID: String) throws {
