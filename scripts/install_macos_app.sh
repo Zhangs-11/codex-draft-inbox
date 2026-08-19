@@ -18,7 +18,7 @@ plutil -insert ProgramArguments.0 \
     "$LAUNCH_AGENT"
 
 launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
-if ! launchctl bootstrap "gui/$UID" "$LAUNCH_AGENT"; then
+if ! launchctl bootstrap "gui/$UID" "$LAUNCH_AGENT" >/dev/null 2>&1; then
     sleep 1
     launchctl bootstrap "gui/$UID" "$LAUNCH_AGENT"
 fi
