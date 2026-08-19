@@ -8,11 +8,12 @@ final class InboxViewModel: ObservableObject {
     @Published private(set) var items: [PendingItem] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var notificationDraftPreviewEnabled = false
+    @Published private(set) var isRefreshing = false
 
     private let repository: InboxRepository
     private let syncService: DraftSyncService?
     private var timer: Timer?
-    private var syncInFlight = false
+    private var refreshCoordinator = RefreshCoordinator()
 
     init(
         repository: InboxRepository = .live,
@@ -45,15 +46,23 @@ final class InboxViewModel: ObservableObject {
     }
 
     func refresh() {
-        synchronize()
+        isRefreshing = true
+        synchronize(queueIfBusy: true, showProgress: true)
     }
 
-    private func synchronize() {
-        guard !syncInFlight, let syncService else {
+    private func synchronize(queueIfBusy: Bool = false, showProgress: Bool = false) {
+        guard refreshCoordinator.begin(queueIfBusy: queueIfBusy) else {
+            return
+        }
+        guard let syncService else {
+            _ = refreshCoordinator.finish()
+            isRefreshing = false
             reload()
             return
         }
-        syncInFlight = true
+        if showProgress {
+            isRefreshing = true
+        }
         Task.detached {
             let syncFailed: Bool
             do {
@@ -63,10 +72,15 @@ final class InboxViewModel: ObservableObject {
                 syncFailed = true
             }
             await MainActor.run { [weak self] in
-                self?.syncInFlight = false
+                let shouldRefreshAgain = self?.refreshCoordinator.finish() == true
                 self?.reload()
                 if syncFailed {
                     self?.errorMessage = "同步失败，当前显示的是上次保存的待办"
+                }
+                if shouldRefreshAgain {
+                    self?.synchronize(showProgress: true)
+                } else {
+                    self?.isRefreshing = false
                 }
             }
         }

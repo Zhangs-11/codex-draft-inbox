@@ -18,14 +18,14 @@ let package = Package(
                 "InboxPanel.swift",
                 "InboxViewModel.swift",
             ],
-            sources: ["InboxModels.swift", "InboxRepository.swift"],
+            sources: ["InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
             name: "CodexDraftInbox",
             dependencies: ["DraftInboxCore"],
             path: "Sources",
-            exclude: ["InboxModels.swift", "InboxRepository.swift"],
+            exclude: ["InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
             sources: [
                 "CodexDraftInboxApp.swift",
                 "DraftSyncService.swift",

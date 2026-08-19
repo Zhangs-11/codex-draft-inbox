@@ -42,6 +42,11 @@ def _thread_db_path() -> Path:
     return Path(override).expanduser() if override else _codex_home() / "state_5.sqlite"
 
 
+def _session_index_path() -> Path:
+    override = os.environ.get("CODEX_DRAFT_INBOX_SESSION_INDEX_PATH")
+    return Path(override).expanduser() if override else _codex_home() / "session_index.jsonl"
+
+
 def _inbox_path() -> Path:
     override = os.environ.get("CODEX_DRAFT_INBOX_STATE_PATH")
     return Path(override).expanduser() if override else _codex_home() / "draft-inbox" / "pending.json"
@@ -317,7 +322,31 @@ def _looks_like_identifier(value: str) -> bool:
     return bool(re.fullmatch(r"(?:client-new-thread:)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value, re.I))
 
 
-def _thread_title(thread_id: str) -> str:
+def _session_thread_names() -> dict[str, str]:
+    path = _session_index_path()
+    if not path.is_file():
+        return {}
+    names: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        thread_id = entry.get("id") if isinstance(entry, dict) else None
+        name = entry.get("thread_name") if isinstance(entry, dict) else None
+        if isinstance(thread_id, str) and isinstance(name, str) and name.strip():
+            names[thread_id] = _clean_user_message(name)
+    return names
+
+
+def _thread_title(thread_id: str, session_names: dict[str, str] | None = None) -> str:
+    display_name = (session_names if session_names is not None else _session_thread_names()).get(thread_id, "")
+    if display_name and not _looks_like_identifier(display_name):
+        return display_name
     row = _thread_row(thread_id)
     database_title = _clean_user_message(row[0].strip()) if row else ""
     if database_title and not _looks_like_identifier(database_title):
@@ -361,6 +390,31 @@ def _normalize_codex_thread_id(raw_thread_id: str, transcript_path: str = "") ->
         if isinstance(mapped, str) and mapped:
             return mapped
     return raw_thread_id
+
+
+def _thread_audience(thread_id: str) -> str:
+    db_path = _thread_db_path()
+    if not db_path.is_file():
+        return "unknown"
+    try:
+        connection = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True, timeout=1)
+        try:
+            row = connection.execute(
+                "SELECT source, thread_source, agent_path FROM threads WHERE id = ?",
+                (thread_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return "unknown"
+    if row is None:
+        return "missing"
+    source, thread_source, agent_path = (str(row[0] or ""), str(row[1] or ""), str(row[2] or ""))
+    if thread_source == "subagent" or source == "exec" or agent_path:
+        return "internal"
+    if thread_source == "user":
+        return "user"
+    return "other"
 
 
 def _normalize_preview(text: str, limit: int = NOTIFICATION_PREVIEW_LENGTH) -> str:
@@ -429,6 +483,8 @@ def capture(payload: dict[str, Any], *, remember: bool = True) -> bool:
         return False
     transcript_path = payload.get("transcript_path") if isinstance(payload.get("transcript_path"), str) else ""
     thread_id = _normalize_codex_thread_id(raw_thread_id, transcript_path)
+    if _thread_audience(thread_id) != "user":
+        return False
 
     draft_entry = None
     for attempt in range(4):
@@ -489,7 +545,12 @@ def _draft_entries(global_state: dict[str, Any]) -> dict[str, tuple[str, str]]:
     for key, value in drafts.items():
         if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
             continue
-        thread_id = key.rsplit(":", 1)[-1]
+        raw_thread_id = key.rsplit(":", 1)[-1]
+        if raw_thread_id == "new-conversation":
+            continue
+        thread_id = _normalize_codex_thread_id(raw_thread_id)
+        if _thread_audience(thread_id) != "user":
+            continue
         if thread_id and (thread_id not in entries or key.startswith("local:")):
             entries[thread_id] = (key, value)
     return entries
@@ -570,7 +631,8 @@ def _recent_thread_ids(since_ms: int) -> tuple[set[str], int]:
         try:
             rows = connection.execute(
                 "SELECT id, updated_at_ms FROM threads "
-                "WHERE archived = 0 AND preview <> '' AND updated_at_ms >= ?",
+                "WHERE archived = 0 AND preview <> '' AND updated_at_ms >= ? "
+                "AND source <> 'exec' AND thread_source = 'user' AND agent_path IS NULL",
                 (since_ms,),
             ).fetchall()
         finally:
@@ -591,20 +653,32 @@ def _pending_by_thread() -> dict[str, dict[str, Any]]:
 
 
 def _normalize_pending_thread_ids() -> None:
+    removed_thread_ids: set[str] = set()
+    session_names = _session_thread_names()
+
     def normalize(state: dict[str, Any]) -> bool:
         changed = False
         items = state["items"]
         for thread_id, item in list(items.items()):
             if not isinstance(item, dict) or item.get("source") == "claude":
                 continue
-            normalized = _normalize_codex_thread_id(str(thread_id))
-            if normalized == thread_id:
+            thread_id = str(thread_id)
+            normalized = _normalize_codex_thread_id(thread_id)
+            audience = _thread_audience(normalized)
+            if thread_id == "new-conversation" or audience == "internal":
+                items.pop(thread_id, None)
+                removed_thread_ids.add(thread_id)
+                changed = True
                 continue
             moved = dict(item)
             moved["thread_id"] = normalized
-            moved["title"] = _thread_title(normalized)
+            if audience == "user":
+                moved["title"] = _thread_title(normalized, session_names)
+            elif audience == "missing" and str(moved.get("title") or "") in {"", thread_id, normalized}:
+                moved["title"] = "已删除的会话"
+                moved["lifecycle"] = "deleted"
             existing = items.get(normalized)
-            if isinstance(existing, dict):
+            if normalized != thread_id and isinstance(existing, dict):
                 if moved.get("draft") and not existing.get("draft"):
                     existing["draft"] = moved["draft"]
                     existing["draft_key"] = moved.get("draft_key", "")
@@ -614,14 +688,43 @@ def _normalize_pending_thread_ids() -> None:
                 existing_activity = str(existing.get("last_activity_at") or existing.get("completed_at") or "")
                 if moved_activity > existing_activity:
                     existing["last_activity_at"] = moved_activity
-                existing["title"] = _thread_title(normalized)
+                if audience == "user":
+                    existing["title"] = _thread_title(normalized, session_names)
             else:
                 items[normalized] = moved
-            items.pop(thread_id, None)
-            changed = True
+            if normalized != thread_id:
+                items.pop(thread_id, None)
+                removed_thread_ids.add(thread_id)
+                changed = True
+            elif moved != item:
+                items[thread_id] = moved
+                changed = True
         return changed
 
     _mutate_state(normalize)
+    if removed_thread_ids:
+        _remove_observed_threads(removed_thread_ids)
+
+
+def _remove_observed_threads(thread_ids: set[str]) -> None:
+    path = _observed_path()
+    if not path.is_file():
+        return
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            observed = _read_json(path, {})
+            threads = observed.get("threads") if isinstance(observed, dict) else None
+            if not isinstance(threads, dict):
+                return
+            changed = False
+            for thread_id in thread_ids:
+                changed = threads.pop(thread_id, None) is not None or changed
+            if changed:
+                _write_json_atomic(path, observed)
+        finally:
+            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _observation_is_dismissed(thread_id: str, token: str) -> bool:
@@ -832,8 +935,9 @@ def _upsert_pending(
     status: str,
     token: str,
     lifecycle: str,
+    title: str | None = None,
 ) -> bool:
-    resolved_title = _thread_title(thread_id)
+    resolved_title = title or _thread_title(thread_id)
     now = _now_iso()
 
     def update(state: dict[str, Any]) -> bool:
@@ -894,6 +998,7 @@ def _dismiss_observation(thread_id: str, token: str) -> None:
 
 def sync_pending_drafts() -> int:
     global_state = _read_json(_global_state_path(), {})
+    session_names = _session_thread_names()
     drafts = _draft_entries(global_state)
     unread = _unread_thread_ids(global_state)
     _normalize_pending_thread_ids()
@@ -980,11 +1085,12 @@ def sync_pending_drafts() -> int:
                     status=status,
                     token=token,
                     lifecycle=lifecycle,
+                    title=_thread_title(thread_id, session_names),
                 )
                 if not already_pending:
                     captured += 1
                     body = _notification_body(draft, "任务已启动，等待你处理")
-                    _notify(body, subtitle=_thread_title(thread_id))
+                    _notify(body, subtitle=_thread_title(thread_id, session_names))
                     codex_pending[thread_id] = {"thread_id": thread_id}
                 observed_threads[thread_id] = {
                     "token": token,

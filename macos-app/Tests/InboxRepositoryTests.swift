@@ -10,6 +10,7 @@ struct InboxRepositorySelfTests {
             try loadsLegacyItemsWithoutActivityTimestamp()
             try markHandledRemovesOnlySelectedItem()
             try missingStateIsEmpty()
+            try manualRefreshQueuesBehindBackgroundSync()
             print("CodexDraftInbox self-test passed")
         } catch {
             fputs("CodexDraftInbox self-test failed: \(error)\n", stderr)
@@ -78,6 +79,16 @@ struct InboxRepositorySelfTests {
             .appendingPathComponent("pending.json")
 
         try expect(try InboxRepository(stateURL: stateURL).load() == [], "缺失状态文件时没有返回空列表")
+    }
+
+    private static func manualRefreshQueuesBehindBackgroundSync() throws {
+        var coordinator = RefreshCoordinator()
+
+        try expect(coordinator.begin(queueIfBusy: false), "后台同步没有开始")
+        try expect(!coordinator.begin(queueIfBusy: true), "手动刷新绕过了正在运行的同步")
+        try expect(coordinator.finish(), "手动刷新没有排队")
+        try expect(coordinator.begin(queueIfBusy: false), "排队的手动刷新没有补跑")
+        try expect(!coordinator.finish(), "手动刷新被重复排队")
     }
 
     private static func item(id: String, completedAt: String, lastActivityAt: String? = nil) -> PendingItem {

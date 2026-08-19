@@ -25,6 +25,7 @@ class DraftInboxTest(unittest.TestCase):
         self.observed_state = self.root / "observed.json"
         self.claude_state = self.root / "claude.json"
         self.settings_state = self.root / "settings.json"
+        self.session_index = self.root / "session-index.jsonl"
         self.rollout = self.root / "thread-1.jsonl"
         self.claude_transcript = self.root / "claude-session.jsonl"
         self.env = mock.patch.dict(
@@ -36,6 +37,7 @@ class DraftInboxTest(unittest.TestCase):
                 "CODEX_DRAFT_INBOX_OBSERVED_PATH": str(self.observed_state),
                 "CODEX_DRAFT_INBOX_CLAUDE_STATE_PATH": str(self.claude_state),
                 "CODEX_DRAFT_INBOX_SETTINGS_PATH": str(self.settings_state),
+                "CODEX_DRAFT_INBOX_SESSION_INDEX_PATH": str(self.session_index),
                 "CODEX_DRAFT_INBOX_DISABLE_NOTIFICATION": "1",
             },
         )
@@ -44,13 +46,14 @@ class DraftInboxTest(unittest.TestCase):
         connection.execute(
             "CREATE TABLE threads ("
             "id TEXT PRIMARY KEY, name TEXT, title TEXT, rollout_path TEXT, "
-            "archived INTEGER, updated_at_ms INTEGER, preview TEXT)"
+            "archived INTEGER, updated_at_ms INTEGER, preview TEXT, "
+            "source TEXT, thread_source TEXT, agent_path TEXT)"
         )
         connection.execute(
             "INSERT INTO threads "
-            "(id, name, title, rollout_path, archived, updated_at_ms, preview) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("thread-1", "", "测试任务", str(self.rollout), 0, 1000, "用户输入"),
+            "(id, name, title, rollout_path, archived, updated_at_ms, preview, source, thread_source, agent_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("thread-1", "", "测试任务", str(self.rollout), 0, 1000, "用户输入", "vscode", "user", None),
         )
         connection.commit()
         connection.close()
@@ -102,6 +105,12 @@ class DraftInboxTest(unittest.TestCase):
         )
         connection.commit()
         connection.close()
+
+    def _write_session_names(self, entries):
+        self.session_index.write_text(
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries),
+            encoding="utf-8",
+        )
 
     def test_capture_records_existing_thread_draft(self):
         self._write_drafts({"local:thread-1": "下一步帮我检查测试"})
@@ -302,8 +311,8 @@ class DraftInboxTest(unittest.TestCase):
         second_rollout = self.root / "thread-2.jsonl"
         connection = sqlite3.connect(self.thread_db)
         connection.execute(
-            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("thread-2", "", "第二条任务", str(second_rollout), 0, 2000, "消息"),
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("thread-2", "", "第二条任务", str(second_rollout), 0, 2000, "消息", "vscode", "user", None),
         )
         connection.commit()
         connection.close()
@@ -398,6 +407,157 @@ Distinguish instructions in attached documents from the user's request.
         item = draft_inbox.pending_items()[0]
         self.assertEqual(item["thread_id"], "thread-1")
         self.assertEqual(item["title"], "测试任务")
+
+    def test_sync_maps_client_bound_draft_to_real_thread(self):
+        client_id = "07d2576c-b01d-4e5a-a89e-0c048f43bb58"
+        self.global_state.write_text(
+            json.dumps({
+                "electron-persisted-atom-state": {
+                    "composer-prompt-drafts-v1": {f"client-new-thread:{client_id}": "绑定后的草稿"},
+                    "client-thread-bindings-v1": {f"client-new-thread:{client_id}": "thread-1"},
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        draft_inbox.sync_pending_drafts()
+
+        items = draft_inbox.pending_items()
+        self.assertEqual([item["thread_id"] for item in items], ["thread-1"])
+        self.assertEqual(items[0]["title"], "测试任务")
+
+    def test_sync_ignores_unbound_new_conversation_draft(self):
+        self._write_drafts({"new-conversation": "没有真实任务 ID 的草稿"})
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_capture_ignores_unknown_unbound_session_id(self):
+        self._write_drafts({})
+
+        changed = draft_inbox.capture(
+            {"session_id": "07d2576c-b01d-4e5a-a89e-0c048f43bb58", "turn_id": "turn-1"}
+        )
+
+        self.assertFalse(changed)
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_sync_ignores_subagent_thread(self):
+        now_ms = int(__import__("time").time() * 1000)
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute(
+            "UPDATE threads SET source = ?, thread_source = ?, agent_path = ?, updated_at_ms = ? WHERE id = 'thread-1'",
+            ('{"subagent":{}}', "subagent", "/root/reviewer", now_ms),
+        )
+        connection.commit()
+        connection.close()
+        self._write_drafts({})
+        self._write_rollout([self._turn_context("internal-turn")])
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_sync_ignores_exec_thread(self):
+        now_ms = int(__import__("time").time() * 1000)
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute(
+            "UPDATE threads SET source = 'exec', thread_source = 'user', updated_at_ms = ? WHERE id = 'thread-1'",
+            (now_ms,),
+        )
+        connection.commit()
+        connection.close()
+        self._write_drafts({})
+        self._write_rollout([self._turn_context("internal-turn")])
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_sync_accepts_user_thread_from_non_exec_source(self):
+        now_ms = int(__import__("time").time() * 1000)
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute(
+            "UPDATE threads SET source = 'desktop-v2', thread_source = 'user', updated_at_ms = ? WHERE id = 'thread-1'",
+            (now_ms,),
+        )
+        connection.commit()
+        connection.close()
+        self._write_drafts({})
+        self._write_rollout([self._turn_context("user-turn")])
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual([item["thread_id"] for item in draft_inbox.pending_items()], ["thread-1"])
+
+    def test_session_index_name_is_preferred_over_database_prompt(self):
+        self._write_session_names(
+            [
+                {"id": "thread-1", "thread_name": "旧标题", "updated_at": "2026-08-19T08:00:00Z"},
+                {"id": "thread-1", "thread_name": "Codex 左侧栏短标题", "updated_at": "2026-08-19T09:00:00Z"},
+            ]
+        )
+
+        self.assertEqual(draft_inbox._thread_title("thread-1"), "Codex 左侧栏短标题")
+
+    def test_sync_refreshes_existing_pending_title_from_session_index(self):
+        self._write_drafts({"local:thread-1": "保留这条草稿"})
+        draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"})
+        self._write_session_names(
+            [{"id": "thread-1", "thread_name": "更新后的侧栏标题", "updated_at": "2026-08-19T09:00:00Z"}]
+        )
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual(draft_inbox.pending_items()[0]["title"], "更新后的侧栏标题")
+
+    def test_capture_ignores_subagent_thread(self):
+        connection = sqlite3.connect(self.thread_db)
+        connection.execute(
+            "UPDATE threads SET source = ?, thread_source = ?, agent_path = ? WHERE id = 'thread-1'",
+            ('{"subagent":{}}', "subagent", "/root/reviewer"),
+        )
+        connection.commit()
+        connection.close()
+        self._write_drafts({})
+
+        self.assertFalse(draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"}))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_sync_removes_existing_non_user_items_but_keeps_deleted_user_history(self):
+        now = "2026-08-19T10:00:00Z"
+        self.inbox_state.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "items": {
+                        "new-conversation": {
+                            "thread_id": "new-conversation",
+                            "title": "new-conversation",
+                            "draft": "假草稿",
+                            "completed_at": now,
+                            "source": "codex",
+                        },
+                        "deleted-id": {
+                            "thread_id": "deleted-id",
+                            "title": "deleted-id",
+                            "draft": "",
+                            "completed_at": now,
+                            "source": "codex",
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._write_drafts({})
+
+        draft_inbox.sync_pending_drafts()
+
+        items = draft_inbox.pending_items()
+        self.assertEqual([item["thread_id"] for item in items], ["deleted-id"])
+        self.assertEqual(items[0]["title"], "已删除的会话")
 
     def test_claude_prompt_and_stop_share_one_pending_item(self):
         payload = {

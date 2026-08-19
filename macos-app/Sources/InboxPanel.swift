@@ -80,12 +80,20 @@ struct InboxPanel: View {
             Button {
                 viewModel.refresh()
             } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 26, height: 26)
+                Group {
+                    if viewModel.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                }
+                .frame(width: 26, height: 26)
             }
             .buttonStyle(.plain)
-            .help("刷新")
+            .accessibilityLabel("刷新")
+            .help(viewModel.isRefreshing ? "刷新中" : "刷新")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

@@ -9,8 +9,9 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 ## 能做什么
 
 - 统一展示 Codex 与 Claude Code 会话；构建时检测到官方 App 后，使用各自的 Logo 分组。
-- 会话启动后立即进入待办；有非空草稿的 Codex 会话也一定展示。
+- 用户会话启动后立即进入待办；已绑定到真实 Codex 会话的非空草稿也一定展示。
 - 卡片显示真实会话标题，下面显示当前草稿；没有草稿时显示等待处理提示。
+- 会话标题跟随 Codex 侧栏名称，内部 subagent、exec 和未绑定临时草稿不会进入列表。
 - 黄色状态条表示执行中或仅有草稿，绿色表示当前 Turn 已完成。
 - 已归档、已删除、不可见或暂时无法确认的 Codex 会话继续保留，并在标题旁显示标记。
 - 按最后活动时间排序；旧待办产生新 Turn 或新草稿后会回到顶部。
@@ -18,6 +19,7 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 - 只有点击“已处理”才移除；打开、读过、草稿变空或任务结束都不会自动清除。
 - 通知默认隐藏草稿正文，可以在菜单栏面板底部主动开启预览。
 - 登录 macOS 后自动启动；异常退出会由 LaunchAgent 重新拉起。
+- 手动刷新会显示加载状态；若后台同步正在运行，会排队补跑一次。
 - 所有状态保存在本机，不上传草稿，也不会自动发送任何消息。
 
 ## 它是什么
@@ -76,16 +78,16 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 
 #### 使用 GitHub Release
 
-从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载 `Codex-Draft-Inbox-v0.2.1-macos-universal.zip` 和同名 `.sha256` 文件。安装包同时包含 `arm64` 与 `x86_64`，可用于 Apple 芯片和 Intel Mac。先在下载目录校验：
+从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载 `Codex-Draft-Inbox-v0.2.2-macos-universal.zip` 和同名 `.sha256` 文件。安装包同时包含 `arm64` 与 `x86_64`，可用于 Apple 芯片和 Intel Mac。先在下载目录校验：
 
 ```bash
-shasum -a 256 -c Codex-Draft-Inbox-v0.2.1-macos-universal.zip.sha256
+shasum -a 256 -c Codex-Draft-Inbox-v0.2.2-macos-universal.zip.sha256
 ```
 
 解压后运行：
 
 ```bash
-cd "Codex Draft Inbox v0.2.1"
+cd "Codex Draft Inbox v0.2.2"
 ./scripts/install_release.sh
 ```
 
