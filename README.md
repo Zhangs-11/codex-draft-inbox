@@ -76,10 +76,16 @@ codex plugin add codex-draft-inbox@codex-draft-inbox
 
 #### 使用 GitHub Release
 
-从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载 `Codex-Draft-Inbox-v0.2.0-macos.zip`，解压后运行：
+从 [Releases](https://github.com/Zhangs-11/codex-draft-inbox/releases) 下载 `Codex-Draft-Inbox-v0.2.1-macos-universal.zip` 和同名 `.sha256` 文件。安装包同时包含 `arm64` 与 `x86_64`，可用于 Apple 芯片和 Intel Mac。先在下载目录校验：
 
 ```bash
-cd "Codex Draft Inbox v0.2.0"
+shasum -a 256 -c Codex-Draft-Inbox-v0.2.1-macos-universal.zip.sha256
+```
+
+解压后运行：
+
+```bash
+cd "Codex Draft Inbox v0.2.1"
 ./scripts/install_release.sh
 ```
 
@@ -89,7 +95,7 @@ cd "Codex Draft Inbox v0.2.0"
 ./scripts/install_release.sh --with-claude
 ```
 
-当前 Release 使用本地 ad-hoc 签名，属于开源预览版，并未经过 Apple Developer ID 公证。压缩包同时提供 SHA-256 文件用于校验完整性。Release 不重新分发第三方 Logo，因此使用通用分组图标；从源码构建时才会尝试读取本机已安装 App 的官方图标。
+当前 Release 使用本地 ad-hoc 签名，属于开源预览版，并未经过 Apple Developer ID 公证。Universal Binary 已静态核对包含两个架构，并在 Apple 芯片 Mac 上完成安装验证；Intel 实机运行仍未验证。Release 不重新分发第三方 Logo，因此使用通用分组图标；从源码构建时才会尝试读取本机已安装 App 的官方图标。
 
 #### 从源码构建
 

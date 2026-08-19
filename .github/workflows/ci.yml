@@ -22,4 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: ./scripts/test_macos_app.sh
-      - run: CODEX_DRAFT_INBOX_SKIP_BRAND_ASSETS=1 ./scripts/build_macos_app.sh
+      - name: Build and verify Universal Release
+        run: |
+          VERSION=$(plutil -extract CFBundleShortVersionString raw macos-app/AppResources/Info.plist)
+          ./scripts/package_release.sh "$VERSION"
+          lipo -archs "$HOME/Library/Caches/CodexDraftInbox/Codex Draft Inbox.app/Contents/MacOS/CodexDraftInbox" | grep -q arm64
+          lipo -archs "$HOME/Library/Caches/CodexDraftInbox/Codex Draft Inbox.app/Contents/MacOS/CodexDraftInbox" | grep -q x86_64
+          cd dist
+          shasum -a 256 -c "Codex-Draft-Inbox-v$VERSION-macos-universal.zip.sha256"
