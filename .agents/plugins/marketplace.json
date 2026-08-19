@@ -1,0 +1,20 @@
+{
+  "name": "codex-draft-inbox",
+  "interface": {
+    "displayName": "Codex Draft Inbox"
+  },
+  "plugins": [
+    {
+      "name": "codex-draft-inbox",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

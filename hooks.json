@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./scripts/draft_inbox.py capture",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./scripts/draft_inbox.py remind",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
