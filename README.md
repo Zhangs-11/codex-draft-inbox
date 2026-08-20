@@ -6,6 +6,8 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 
 它适合同时跑多个 Agent 任务的人：你可以先在某个 Codex 会话里写好下一句话，再去处理其他工作；任务完成后，菜单栏会保留会话标题、草稿和执行状态，避免“看过结果，却忘了回来继续”。
 
+![Codex Draft Inbox 完整面板演示](docs/assets/codex-draft-inbox-overview.png)
+
 ## 能做什么
 
 - 统一展示 Codex 与 Claude Code 会话；构建时检测到官方 App 后，使用各自的 Logo 分组。
@@ -24,6 +26,8 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 - 登录 macOS 后自动启动。
 - 手动刷新会显示加载状态；若后台同步正在运行，会排队补跑一次。
 - 所有状态保存在本机，不上传草稿，也不会自动发送任何消息。
+
+![Codex Draft Inbox 完成未读、失败和中止状态演示](docs/assets/codex-draft-inbox-statuses.png)
 
 ## 它是什么
 
@@ -139,6 +143,8 @@ xcode-select --install
 3. 点击菜单栏图标查看所有尚未处理的会话。
 4. 点击“打开任务”回到原会话，结合上一轮结果继续处理。
 5. 确认不再需要跟进后，点击“已处理”。
+
+![任务完成后置顶并短暂高亮](docs/assets/codex-draft-inbox-completion.gif)
 
 如果 Codex 会话后来被归档或删除，它仍会留在待办中并显示相应标记。已删除和不可见会话不能再打开，但仍可手动标记“已处理”。
 
