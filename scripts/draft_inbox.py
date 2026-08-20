@@ -510,6 +510,7 @@ def capture(payload: dict[str, Any], *, remember: bool = True) -> bool:
             "observation_token": token,
             "source": "codex",
             "lifecycle": _thread_metadata(thread_id)["lifecycle"],
+            "verified_user_thread": True,
         }
         if isinstance(existing, dict):
             if all(existing.get(key) == value for key, value in fields.items()):
@@ -660,12 +661,23 @@ def _normalize_pending_thread_ids() -> None:
         changed = False
         items = state["items"]
         for thread_id, item in list(items.items()):
-            if not isinstance(item, dict) or item.get("source") == "claude":
+            if not isinstance(item, dict):
+                continue
+            if item.get("source") == "claude":
+                title = str(item.get("title") or "")
+                is_empty_placeholder = (
+                    not str(item.get("draft") or "").strip()
+                    and bool(re.fullmatch(r"Claude 会话 [0-9a-f]{8}", title, re.I))
+                )
+                if _is_internal_claude_message(title) or is_empty_placeholder:
+                    items.pop(thread_id, None)
+                    removed_thread_ids.add(str(thread_id))
+                    changed = True
                 continue
             thread_id = str(thread_id)
             normalized = _normalize_codex_thread_id(thread_id)
             audience = _thread_audience(normalized)
-            if thread_id == "new-conversation" or audience == "internal":
+            if thread_id == "new-conversation" or audience in {"internal", "other"}:
                 items.pop(thread_id, None)
                 removed_thread_ids.add(thread_id)
                 changed = True
@@ -674,9 +686,24 @@ def _normalize_pending_thread_ids() -> None:
             moved["thread_id"] = normalized
             if audience == "user":
                 moved["title"] = _thread_title(normalized, session_names)
-            elif audience == "missing" and str(moved.get("title") or "") in {"", thread_id, normalized}:
-                moved["title"] = "已删除的会话"
+                moved["verified_user_thread"] = True
+            elif audience == "missing":
+                title = str(moved.get("title") or "")
+                has_legacy_user_evidence = (
+                    normalized in session_names
+                    or (
+                        bool(title.strip())
+                        and title != "已删除的会话"
+                        and not _looks_like_identifier(title)
+                    )
+                )
+                if moved.get("verified_user_thread") is not True and not has_legacy_user_evidence:
+                    items.pop(thread_id, None)
+                    removed_thread_ids.add(thread_id)
+                    changed = True
+                    continue
                 moved["lifecycle"] = "deleted"
+                moved["verified_user_thread"] = True
             existing = items.get(normalized)
             if normalized != thread_id and isinstance(existing, dict):
                 if moved.get("draft") and not existing.get("draft"):
@@ -725,6 +752,19 @@ def _remove_observed_threads(thread_ids: set[str]) -> None:
                 _write_json_atomic(path, observed)
         finally:
             fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _remove_pending_threads(thread_ids: set[str]) -> bool:
+    def remove(state: dict[str, Any]) -> bool:
+        changed = False
+        for thread_id in thread_ids:
+            changed = state["items"].pop(thread_id, None) is not None or changed
+        return changed
+
+    changed = _mutate_state(remove)
+    if changed:
+        _remove_observed_threads(thread_ids)
+    return changed
 
 
 def _observation_is_dismissed(thread_id: str, token: str) -> bool:
@@ -776,6 +816,45 @@ def _upsert_external_pending(
     return _mutate_state(update)
 
 
+def _is_internal_claude_message(message: str) -> bool:
+    compact = " ".join(message.split())
+    return (
+        compact.startswith("[工作环境] 输出目录:")
+        and "[任务参数]" in compact
+        and "[产出协议]" in compact
+        and ".workspaces/" in compact
+        and bool(re.search(r"/slot-[^/\s]+/workspace(?:\s|$)", compact))
+    )
+
+
+def _sanitize_internal_claude_sessions() -> None:
+    state_path = _claude_state_path()
+    if not state_path.is_file():
+        return
+    lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            state = _load_claude_state()
+            changed = False
+            for session_id, session in list(state["sessions"].items()):
+                if not isinstance(session, dict):
+                    continue
+                if not _is_internal_claude_message(str(session.get("last_user_message") or "")):
+                    continue
+                state["sessions"][session_id] = {
+                    "counter": int(session.get("counter") or 1),
+                    "ignored": True,
+                    "status": "ignored",
+                }
+                state["drafts"].pop(f"claude:{session_id}", None)
+                changed = True
+            if changed:
+                _write_json_atomic(state_path, state)
+        finally:
+            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _load_claude_state() -> dict[str, Any]:
     state = _read_json(_claude_state_path(), {"version": 1, "sessions": {}, "drafts": {}})
     if not isinstance(state, dict):
@@ -807,13 +886,20 @@ def handle_claude_event(payload: dict[str, Any]) -> bool:
             session = state["sessions"].get(session_id)
             if not isinstance(session, dict):
                 session = {"counter": 0}
-            if event in {"SessionStart", "UserPromptSubmit"}:
+            if event == "UserPromptSubmit":
                 session["counter"] = int(session.get("counter") or 0) + 1
             prompt = payload.get("prompt") if isinstance(payload.get("prompt"), str) else ""
             transcript_path = payload.get("transcript_path") if isinstance(payload.get("transcript_path"), str) else ""
             latest_message = _clean_user_message(prompt) or _latest_claude_user_message(transcript_path)
             if latest_message:
                 session["last_user_message"] = latest_message
+            is_internal = (
+                bool(payload.get("agent_id"))
+                or bool(session.get("ignored"))
+                or _is_internal_claude_message(str(session.get("last_user_message") or ""))
+            )
+            if is_internal:
+                session["ignored"] = True
             session["cwd"] = str(payload.get("cwd") or session.get("cwd") or "")
             session["transcript_path"] = transcript_path or str(session.get("transcript_path") or "")
             state["sessions"][session_id] = session
@@ -823,12 +909,26 @@ def handle_claude_event(payload: dict[str, Any]) -> bool:
             title = str(session.get("last_user_message") or f"Claude 会话 {session_id[:8]}")
             cwd = str(session.get("cwd") or "")
             status = "completed" if event == "Stop" else "running"
+            defer_pending = event == "SessionStart"
             session["status"] = status
+            if is_internal:
+                session = {
+                    "counter": counter,
+                    "ignored": True,
+                    "status": "ignored",
+                }
             state["sessions"][session_id] = session
+            if is_internal:
+                state["drafts"].pop(thread_id, None)
             _write_json_atomic(state_path, state)
         finally:
             fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
 
+    if is_internal:
+        _remove_pending_threads({thread_id})
+        return False
+    if defer_pending:
+        return False
     if _observation_is_dismissed(thread_id, token):
         return False
     pending_before = thread_id in _pending_by_thread()
@@ -957,6 +1057,7 @@ def _upsert_pending(
             "observation_token": token,
             "lifecycle": lifecycle,
             "source": "codex",
+            "verified_user_thread": True,
         }
         if isinstance(existing, dict):
             if all(existing.get(key) == value for key, value in fields.items()):
@@ -1001,6 +1102,7 @@ def sync_pending_drafts() -> int:
     session_names = _session_thread_names()
     drafts = _draft_entries(global_state)
     unread = _unread_thread_ids(global_state)
+    _sanitize_internal_claude_sessions()
     _normalize_pending_thread_ids()
     pending = _pending_by_thread()
     codex_pending = {

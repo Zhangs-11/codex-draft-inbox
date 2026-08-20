@@ -129,6 +129,7 @@ class DraftInboxTest(unittest.TestCase):
         item = draft_inbox.pending_items()[0]
         self.assertEqual(item["draft"], "")
         self.assertEqual(item["status"], "completed")
+        self.assertTrue(item["verified_user_thread"])
 
     def test_clear_removes_pending_item_but_reading_does_not(self):
         self._write_drafts({"local:thread-1": "继续处理"})
@@ -525,7 +526,7 @@ Distinguish instructions in attached documents from the user's request.
         self.assertFalse(draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"}))
         self.assertEqual(draft_inbox.pending_items(), [])
 
-    def test_sync_removes_existing_non_user_items_but_keeps_deleted_user_history(self):
+    def test_sync_removes_unverified_missing_items_but_keeps_verified_deleted_history(self):
         now = "2026-08-19T10:00:00Z"
         self.inbox_state.write_text(
             json.dumps(
@@ -545,6 +546,37 @@ Distinguish instructions in attached documents from the user's request.
                             "draft": "",
                             "completed_at": now,
                             "source": "codex",
+                            "verified_user_thread": True,
+                        },
+                        "unverified-id": {
+                            "thread_id": "unverified-id",
+                            "title": "已删除的会话",
+                            "draft": "",
+                            "completed_at": now,
+                            "source": "codex",
+                        },
+                        "unverified-empty": {
+                            "thread_id": "unverified-empty",
+                            "title": "",
+                            "draft": "",
+                            "completed_at": now,
+                            "source": "codex",
+                        },
+                        "legacy-deleted-id": {
+                            "thread_id": "legacy-deleted-id",
+                            "title": "真实历史会话",
+                            "draft": "",
+                            "completed_at": now,
+                            "source": "codex",
+                            "lifecycle": "deleted",
+                        },
+                        "legacy-deleted-before-sync": {
+                            "thread_id": "legacy-deleted-before-sync",
+                            "title": "升级前删除的真实会话",
+                            "draft": "",
+                            "completed_at": now,
+                            "source": "codex",
+                            "lifecycle": "active",
                         },
                     },
                 }
@@ -556,8 +588,125 @@ Distinguish instructions in attached documents from the user's request.
         draft_inbox.sync_pending_drafts()
 
         items = draft_inbox.pending_items()
-        self.assertEqual([item["thread_id"] for item in items], ["deleted-id"])
-        self.assertEqual(items[0]["title"], "已删除的会话")
+        self.assertEqual(
+            {item["thread_id"] for item in items},
+            {"deleted-id", "legacy-deleted-id", "legacy-deleted-before-sync"},
+        )
+        self.assertTrue(all(item["lifecycle"] == "deleted" for item in items))
+        self.assertTrue(all(item["verified_user_thread"] for item in items))
+
+    def test_claude_internal_worker_prompt_is_ignored(self):
+        payload = {
+            "session_id": "internal-worker",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "[工作环境] 输出目录: /tmp/.workspaces/ws/slot-0/workspace "
+            "[任务参数] - task: run tests [产出协议] write verdict",
+        }
+
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+        payload["hook_event_name"] = "Stop"
+        payload.pop("prompt")
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_claude_subagent_event_is_ignored(self):
+        payload = {
+            "session_id": "subagent-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "检查代码",
+            "agent_id": "agent-1",
+            "agent_type": "reviewer",
+        }
+
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_claude_interactive_named_agent_is_kept(self):
+        payload = {
+            "session_id": "named-agent-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "检查真实用户任务",
+            "agent_type": "reviewer",
+        }
+
+        self.assertTrue(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(
+            [item["thread_id"] for item in draft_inbox.pending_items()],
+            ["claude:named-agent-session"],
+        )
+
+    def test_claude_user_analyzing_worker_log_is_kept(self):
+        payload = {
+            "session_id": "worker-log-analysis",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "请分析这段失败日志：[工作环境] 输出目录: /tmp/.workspaces/ws/slot-0/workspace "
+            "[任务参数] task=x [产出协议] verdict",
+        }
+
+        self.assertTrue(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(
+            [item["thread_id"] for item in draft_inbox.pending_items()],
+            ["claude:worker-log-analysis"],
+        )
+
+    def test_sync_removes_existing_internal_claude_worker(self):
+        now = "2026-08-19T10:00:00Z"
+        self.inbox_state.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "items": {
+                        "claude:internal-worker": {
+                            "thread_id": "claude:internal-worker",
+                            "title": "[工作环境] 输出目录: /tmp/.workspaces/ws/slot-0/workspace "
+                            "[任务参数] run tests [产出协议] write verdict",
+                            "draft": "",
+                            "completed_at": now,
+                            "source": "claude",
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.claude_state.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "drafts": {"claude:internal-worker": "内部草稿"},
+                    "sessions": {
+                        "internal-worker": {
+                            "counter": 2,
+                            "last_user_message": "[工作环境] 输出目录: /tmp/.workspaces/ws/slot-0/workspace "
+                            "[任务参数] run tests [产出协议] write verdict",
+                            "status": "running",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._write_drafts({})
+
+        draft_inbox.sync_pending_drafts()
+
+        self.assertEqual(draft_inbox.pending_items(), [])
+        state = json.loads(self.claude_state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["sessions"]["internal-worker"],
+            {"counter": 2, "ignored": True, "status": "ignored"},
+        )
+        self.assertEqual(state["drafts"], {})
 
     def test_claude_prompt_and_stop_share_one_pending_item(self):
         payload = {
@@ -579,6 +728,48 @@ Distinguish instructions in attached documents from the user's request.
         items = draft_inbox.pending_items()
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["status"], "completed")
+
+    def test_claude_session_start_waits_for_user_content(self):
+        payload = {
+            "session_id": "empty-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "SessionStart",
+        }
+
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+        payload["hook_event_name"] = "UserPromptSubmit"
+        payload["prompt"] = "现在开始处理真实任务"
+        self.assertTrue(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items()[0]["title"], "现在开始处理真实任务")
+
+    def test_claude_compact_does_not_readd_handled_session(self):
+        payload = {
+            "session_id": "compact-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "处理真实任务",
+        }
+        draft_inbox.handle_claude_event(payload)
+        draft_inbox.clear("claude:compact-session", manual=True)
+
+        payload["hook_event_name"] = "SessionStart"
+        payload["source"] = "compact"
+        payload.pop("prompt")
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+        payload["hook_event_name"] = "Stop"
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+        payload["hook_event_name"] = "UserPromptSubmit"
+        payload["prompt"] = "这是用户提交的新任务"
+        self.assertTrue(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items()[0]["title"], "这是用户提交的新任务")
 
     def test_claude_manual_handled_does_not_reappear_on_same_stop(self):
         payload = {
