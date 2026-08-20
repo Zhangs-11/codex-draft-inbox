@@ -15,12 +15,13 @@ struct CodexDraftInboxApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var viewModel = InboxViewModel()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private var itemsSubscription: AnyCancellable?
     private var completionSubscription: AnyCancellable?
+    private var outsideClickMonitor: Any?
     private var previewWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -40,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover.behavior = .transient
         popover.animates = true
+        popover.delegate = self
         popover.contentSize = NSSize(width: 410, height: 530)
         popover.contentViewController = NSHostingController(rootView: InboxPanel(viewModel: viewModel))
 
@@ -91,9 +93,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
         if activating {
+            stopOutsideClickMonitor()
             viewModel.refresh()
             NSApp.activate(ignoringOtherApps: true)
+        } else {
+            startOutsideClickMonitor()
         }
+    }
+
+    private func startOutsideClickMonitor() {
+        stopOutsideClickMonitor()
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self, self.popover.isShown else { return }
+                self.popover.performClose(nil)
+            }
+        }
+    }
+
+    private func stopOutsideClickMonitor() {
+        guard let outsideClickMonitor else { return }
+        NSEvent.removeMonitor(outsideClickMonitor)
+        self.outsideClickMonitor = nil
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        stopOutsideClickMonitor()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        stopOutsideClickMonitor()
     }
 
     private func showPreviewWindow() {
