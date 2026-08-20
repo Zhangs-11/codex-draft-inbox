@@ -25,6 +25,7 @@ let package = Package(
                 "InboxModels.swift",
                 "InboxRepository.swift",
                 "RefreshCoordinator.swift",
+                "TaskOpenCoordinator.swift",
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
@@ -38,6 +39,7 @@ let package = Package(
                 "InboxModels.swift",
                 "InboxRepository.swift",
                 "RefreshCoordinator.swift",
+                "TaskOpenCoordinator.swift",
             ],
             sources: [
                 "CodexDraftInboxApp.swift",

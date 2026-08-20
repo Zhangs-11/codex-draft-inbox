@@ -43,7 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.animates = true
         popover.delegate = self
         popover.contentSize = NSSize(width: 410, height: 530)
-        popover.contentViewController = NSHostingController(rootView: InboxPanel(viewModel: viewModel))
+        popover.contentViewController = NSHostingController(
+            rootView: InboxPanel(viewModel: viewModel) { [weak self] in
+                self?.closePopover()
+            }
+        )
 
         itemsSubscription = viewModel.$items.sink { [weak self] items in
             self?.updateStatusItem(count: items.count)
@@ -101,6 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    private func closePopover() {
+        guard popover.isShown else { return }
+        popover.performClose(nil)
+    }
+
     private func startOutsideClickMonitor() {
         stopOutsideClickMonitor()
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -136,7 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         )
         window.title = "Codex 草稿待办 · 验收预览"
         window.titlebarAppearsTransparent = true
-        window.contentViewController = NSHostingController(rootView: InboxPanel(viewModel: viewModel))
+        window.contentViewController = NSHostingController(
+            rootView: InboxPanel(viewModel: viewModel) { [weak self] in
+                self?.previewWindow?.close()
+            }
+        )
         window.center()
         window.makeKeyAndOrderFront(nil)
         previewWindow = window

@@ -4,8 +4,14 @@ import SwiftUI
 
 struct InboxPanel: View {
     @ObservedObject var viewModel: InboxViewModel
+    let onDismiss: () -> Void
 
     private let accent = Color(red: 0.89, green: 0.42, blue: 0.25)
+
+    init(viewModel: InboxViewModel, onDismiss: @escaping () -> Void) {
+        self.viewModel = viewModel
+        self.onDismiss = onDismiss
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +32,10 @@ struct InboxPanel: View {
                                     accent: accent,
                                     isNewlyCompleted: viewModel.newlyCompletedThreadIDs.contains(item.threadID)
                                 ) {
-                                    viewModel.openTask(item)
+                                    TaskOpenCoordinator.perform(
+                                        open: { viewModel.openTask(item) },
+                                        dismiss: onDismiss
+                                    )
                                 } onHandled: {
                                     viewModel.markHandled(item)
                                 } onSaveDraft: { text in

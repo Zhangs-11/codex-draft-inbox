@@ -267,21 +267,25 @@ final class InboxViewModel: ObservableObject {
         }
     }
 
-    func openTask(_ item: PendingItem) {
+    @discardableResult
+    func openTask(_ item: PendingItem) -> Bool {
         if item.source == "claude" {
-            if openClaudeSession(item) {
+            let opened = openClaudeSession(item)
+            if opened {
                 markRead(item)
             }
-            return
+            return opened
         }
         guard let url = URL(string: "codex://threads/\(item.threadID)") else {
             errorMessage = "任务链接无效"
-            return
+            return false
         }
         if NSWorkspace.shared.open(url) {
             refreshCodexReadStateSoon()
+            return true
         } else {
             errorMessage = "Codex 没有接受任务链接"
+            return false
         }
     }
 

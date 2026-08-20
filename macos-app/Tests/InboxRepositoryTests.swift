@@ -23,6 +23,8 @@ struct InboxRepositorySelfTests {
             try completionDetectorIgnoresDraftChangesAfterCompletion()
             try completionDetectorIgnoresSyntheticGenerationRecovery()
             try completionUnreadRequiresCompletedStatus()
+            try successfulTaskOpenDismissesPopover()
+            try failedTaskOpenKeepsPopoverVisible()
             print("CodexDraftInbox self-test passed")
         } catch {
             fputs("CodexDraftInbox self-test failed: \(error)\n", stderr)
@@ -289,6 +291,30 @@ struct InboxRepositorySelfTests {
 
         try expect(!running.isCompletionUnread, "执行中的任务被显示为已完成未读")
         try expect(completed.isCompletionUnread, "已完成未读标识没有生效")
+    }
+
+    private static func successfulTaskOpenDismissesPopover() throws {
+        var dismissCount = 0
+
+        let opened = TaskOpenCoordinator.perform(
+            open: { true },
+            dismiss: { dismissCount += 1 }
+        )
+
+        try expect(opened, "成功打开任务却返回失败")
+        try expect(dismissCount == 1, "成功打开任务后没有关闭弹窗")
+    }
+
+    private static func failedTaskOpenKeepsPopoverVisible() throws {
+        var dismissCount = 0
+
+        let opened = TaskOpenCoordinator.perform(
+            open: { false },
+            dismiss: { dismissCount += 1 }
+        )
+
+        try expect(!opened, "打开失败却返回成功")
+        try expect(dismissCount == 0, "打开失败时错误关闭了弹窗")
     }
 
     private static func release(
