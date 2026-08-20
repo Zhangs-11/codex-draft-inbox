@@ -25,6 +25,8 @@ struct InboxRepositorySelfTests {
             try completionUnreadRequiresCompletedStatus()
             try successfulTaskOpenDismissesPopover()
             try failedTaskOpenKeepsPopoverVisible()
+            try resolvesConfiguredAndSystemLanguages()
+            try providesCompleteChineseAndEnglishCopy()
             print("CodexDraftInbox self-test passed")
         } catch {
             fputs("CodexDraftInbox self-test failed: \(error)\n", stderr)
@@ -315,6 +317,38 @@ struct InboxRepositorySelfTests {
 
         try expect(!opened, "打开失败却返回成功")
         try expect(dismissCount == 0, "打开失败时错误关闭了弹窗")
+    }
+
+    private static func resolvesConfiguredAndSystemLanguages() throws {
+        try expect(
+            AppLanguage.system.resolved(preferredLanguages: ["zh-Hans-CN"]) == .simplifiedChinese,
+            "中文系统没有解析为简体中文"
+        )
+        try expect(
+            AppLanguage.system.resolved(preferredLanguages: ["en-US"]) == .english,
+            "英文系统没有解析为英文"
+        )
+        try expect(
+            AppLanguage.system.resolved(preferredLanguages: ["ja-JP"]) == .english,
+            "其他系统语言没有回退为英文"
+        )
+        try expect(
+            AppLanguage.simplifiedChinese.resolved(preferredLanguages: ["en-US"]) == .simplifiedChinese,
+            "手动选择中文后仍然跟随系统"
+        )
+    }
+
+    private static func providesCompleteChineseAndEnglishCopy() throws {
+        let chinese = AppStrings(language: .simplifiedChinese)
+        let english = AppStrings(language: .english)
+
+        for key in AppTextKey.allCases {
+            try expect(chinese.hasTranslation(for: key), "中文文案缺失：\(key)")
+            try expect(english.hasTranslation(for: key), "英文文案缺失：\(key)")
+        }
+        try expect(chinese[.inboxTitle] == "会话待办", "中文标题不正确")
+        try expect(english[.inboxTitle] == "Conversation Inbox", "英文标题不正确")
+        try expect(english[.openTask] == "Open task", "英文操作文案不正确")
     }
 
     private static func release(

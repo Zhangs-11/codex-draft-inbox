@@ -11,9 +11,10 @@ struct CompletionBatch {
 @MainActor
 final class InboxViewModel: ObservableObject {
     @Published private(set) var items: [PendingItem] = []
-    @Published private(set) var errorMessage: String?
+    @Published private var errorMessageKey: AppTextKey?
     @Published private(set) var notificationDraftPreviewEnabled = false
     @Published private(set) var completionPopoverEnabled = true
+    @Published private(set) var appLanguage: AppLanguage = .system
     @Published private(set) var newlyCompletedThreadIDs: Set<String> = []
     @Published private(set) var completionBatch: CompletionBatch?
     @Published private(set) var isRefreshing = false
@@ -33,6 +34,9 @@ final class InboxViewModel: ObservableObject {
     private let lastUpdateCheckKey = "CodexDraftInbox.lastUpdateCheckAt"
     private let availableUpdateTagKey = "CodexDraftInbox.availableUpdateTag"
     private let availableUpdateURLKey = "CodexDraftInbox.availableUpdateURL"
+
+    var strings: AppStrings { AppStrings(language: appLanguage) }
+    var errorMessage: String? { errorMessageKey.map { strings[$0] } }
 
     init(
         repository: InboxRepository = .live,
@@ -76,9 +80,9 @@ final class InboxViewModel: ObservableObject {
             if !completedItems.isEmpty {
                 registerCompletion(completedItems)
             }
-            errorMessage = nil
+            errorMessageKey = nil
         } catch {
-            errorMessage = "待办文件暂时无法读取"
+            errorMessageKey = .inboxReadError
         }
     }
 
@@ -106,7 +110,7 @@ final class InboxViewModel: ObservableObject {
     func openAvailableUpdate() {
         guard case let .available(release) = updateCheckState else { return }
         if !NSWorkspace.shared.open(release.htmlURL) {
-            errorMessage = "无法打开更新页面"
+            errorMessageKey = .updateOpenError
         }
     }
 
@@ -208,7 +212,7 @@ final class InboxViewModel: ObservableObject {
                 let shouldRefreshAgain = self?.refreshCoordinator.finish() == true
                 self?.reload()
                 if syncFailed {
-                    self?.errorMessage = "同步失败，当前显示的是上次保存的待办"
+                    self?.errorMessageKey = .syncError
                 }
                 if shouldRefreshAgain {
                     self?.synchronize(showProgress: true)
@@ -230,6 +234,7 @@ final class InboxViewModel: ObservableObject {
                 guard let self else { return }
                 self.notificationDraftPreviewEnabled = settings?.notificationDraftPreviewEnabled ?? false
                 self.completionPopoverEnabled = settings?.completionPopoverEnabled ?? true
+                self.appLanguage = settings?.language ?? .system
                 self.synchronize()
             }
         }
@@ -245,7 +250,7 @@ final class InboxViewModel: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.errorMessage = "通知隐私设置保存失败"
+                    self?.errorMessageKey = .notificationSettingsError
                 }
             }
         }
@@ -261,7 +266,27 @@ final class InboxViewModel: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.errorMessage = "完成提醒设置保存失败"
+                    self?.errorMessageKey = .completionSettingsError
+                }
+            }
+        }
+    }
+
+    func setLanguage(_ language: AppLanguage) {
+        guard let syncService else {
+            appLanguage = language
+            return
+        }
+        Task.detached {
+            do {
+                try syncService.setLanguage(language)
+                await MainActor.run { [weak self] in
+                    self?.appLanguage = language
+                    self?.errorMessageKey = nil
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessageKey = .languageSettingsError
                 }
             }
         }
@@ -277,14 +302,14 @@ final class InboxViewModel: ObservableObject {
             return opened
         }
         guard let url = URL(string: "codex://threads/\(item.threadID)") else {
-            errorMessage = "任务链接无效"
+            errorMessageKey = .taskLinkError
             return false
         }
         if NSWorkspace.shared.open(url) {
             refreshCodexReadStateSoon()
             return true
         } else {
-            errorMessage = "Codex 没有接受任务链接"
+            errorMessageKey = .codexOpenError
             return false
         }
     }
@@ -297,7 +322,7 @@ final class InboxViewModel: ObservableObject {
                 await MainActor.run { [weak self] in self?.reload() }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.errorMessage = "未读状态更新失败"
+                    self?.errorMessageKey = .unreadUpdateError
                 }
             }
         }
@@ -318,7 +343,7 @@ final class InboxViewModel: ObservableObject {
                 await MainActor.run { [weak self] in self?.reload() }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.errorMessage = "Claude 草稿保存失败"
+                    self?.errorMessageKey = .claudeDraftSaveError
                 }
             }
         }
@@ -331,11 +356,11 @@ final class InboxViewModel: ObservableObject {
             process.arguments = ["-e", "tell application \"Terminal\" to activate"]
         } else {
             guard let sessionID = item.externalSessionID, !sessionID.isEmpty else {
-                errorMessage = "缺少 Claude session ID"
+                errorMessageKey = .missingClaudeSessionError
                 return false
             }
             let cwd = item.cwd?.isEmpty == false ? item.cwd! : FileManager.default.homeDirectoryForCurrentUser.path
-            let command = "cd \(shellQuote(cwd)) && if command -v claude >/dev/null 2>&1; then claude --resume \(shellQuote(sessionID)); else echo '未找到 claude，请先安装 Claude Code 或检查 PATH'; fi"
+            let command = "cd \(shellQuote(cwd)) && if command -v claude >/dev/null 2>&1; then claude --resume \(shellQuote(sessionID)); else echo \(shellQuote(strings[.claudeNotFound])); fi"
             let script = "tell application \"Terminal\" to do script \(appleScriptQuote(command))\ntell application \"Terminal\" to activate"
             process.arguments = ["-e", script]
         }
@@ -343,7 +368,7 @@ final class InboxViewModel: ObservableObject {
             try process.run()
             return true
         } catch {
-            errorMessage = "无法打开 Claude Code 会话"
+            errorMessageKey = .claudeOpenError
             return false
         }
     }
@@ -366,7 +391,7 @@ final class InboxViewModel: ObservableObject {
                     await MainActor.run { [weak self] in self?.reload() }
                 } catch {
                     await MainActor.run { [weak self] in
-                        self?.errorMessage = "标记失败，请稍后再试"
+                        self?.errorMessageKey = .markHandledError
                     }
                 }
             }
@@ -376,7 +401,7 @@ final class InboxViewModel: ObservableObject {
             try repository.markHandled(threadID: item.threadID)
             reload()
         } catch {
-            errorMessage = "标记失败，请稍后再试"
+            errorMessageKey = .markHandledError
         }
     }
 }

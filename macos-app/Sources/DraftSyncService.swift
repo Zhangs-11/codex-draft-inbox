@@ -1,8 +1,10 @@
+import DraftInboxCore
 import Foundation
 
 struct InboxSettings {
     let notificationDraftPreviewEnabled: Bool
     let completionPopoverEnabled: Bool
+    let language: AppLanguage
 }
 
 struct DraftSyncService {
@@ -36,7 +38,8 @@ struct DraftSyncService {
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         return InboxSettings(
             notificationDraftPreviewEnabled: payload?["show_notification_draft_preview"] as? Bool ?? false,
-            completionPopoverEnabled: payload?["show_completion_popover"] as? Bool ?? true
+            completionPopoverEnabled: payload?["show_completion_popover"] as? Bool ?? true,
+            language: AppLanguage(rawValue: payload?["language"] as? String ?? "") ?? .system
         )
     }
 
@@ -46,6 +49,10 @@ struct DraftSyncService {
 
     func setCompletionPopover(enabled: Bool) throws {
         _ = try run(arguments: ["set-completion-popover", "--enabled", enabled ? "true" : "false"])
+    }
+
+    func setLanguage(_ language: AppLanguage) throws {
+        _ = try run(arguments: ["set-language", "--language", language.rawValue])
     }
 
     private func run(arguments: [String]) throws -> Data {

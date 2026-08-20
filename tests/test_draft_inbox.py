@@ -39,6 +39,7 @@ class DraftInboxTest(unittest.TestCase):
                 "CODEX_DRAFT_INBOX_SETTINGS_PATH": str(self.settings_state),
                 "CODEX_DRAFT_INBOX_SESSION_INDEX_PATH": str(self.session_index),
                 "CODEX_DRAFT_INBOX_DISABLE_NOTIFICATION": "1",
+                "CODEX_DRAFT_INBOX_SYSTEM_LANGUAGE": "zh-Hans",
             },
         )
         self.env.start()
@@ -409,6 +410,7 @@ class DraftInboxTest(unittest.TestCase):
     def test_notification_draft_preview_defaults_to_hidden_and_can_be_enabled(self):
         self.assertFalse(draft_inbox._load_settings()["show_notification_draft_preview"])
         self.assertTrue(draft_inbox._load_settings()["show_completion_popover"])
+        self.assertEqual(draft_inbox._load_settings()["language"], "system")
         self.assertEqual(draft_inbox._notification_body("秘密草稿", "普通提醒"), "普通提醒")
 
         self.assertTrue(draft_inbox.set_notification_draft_preview(True))
@@ -421,6 +423,37 @@ class DraftInboxTest(unittest.TestCase):
         settings = draft_inbox._load_settings()
         self.assertTrue(settings["show_notification_draft_preview"])
         self.assertFalse(settings["show_completion_popover"])
+
+    def test_language_setting_localizes_notifications_and_preserves_other_settings(self):
+        self.assertEqual(set(draft_inbox.LOCALIZED_TEXT["zh-Hans"]), set(draft_inbox.LOCALIZED_TEXT["en"]))
+        self.assertTrue(
+            all(
+                value
+                for language in draft_inbox.LOCALIZED_TEXT.values()
+                for value in language.values()
+            )
+        )
+        self.assertEqual(draft_inbox._effective_language(), "zh-Hans")
+        self.assertTrue(draft_inbox.set_notification_draft_preview(True))
+
+        self.assertTrue(draft_inbox.set_language("en"))
+
+        settings = draft_inbox._load_settings()
+        self.assertEqual(settings["language"], "en")
+        self.assertTrue(settings["show_notification_draft_preview"])
+        self.assertEqual(draft_inbox._effective_language(), "en")
+        self.assertEqual(draft_inbox._notification_body("private draft", "fallback"), "Draft: private draft")
+        self.assertEqual(
+            draft_inbox._status_notification_fallback("completed"),
+            "Task completed and waiting for you",
+        )
+        self.assertEqual(draft_inbox._pending_count_text(1), "1 conversation is waiting for you")
+        self.assertEqual(draft_inbox._pending_count_text(2), "2 conversations are waiting for you")
+
+        self.assertTrue(draft_inbox.set_language("system"))
+        self.assertEqual(draft_inbox._effective_language(), "zh-Hans")
+        with mock.patch.dict(os.environ, {"CODEX_DRAFT_INBOX_SYSTEM_LANGUAGE": "zh"}):
+            self.assertEqual(draft_inbox._effective_language(), "zh-Hans")
 
     def test_corrupt_pending_file_recovers_from_last_valid_backup(self):
         self._write_drafts({"local:thread-1": "第一版草稿"})

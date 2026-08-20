@@ -21,6 +21,7 @@ let package = Package(
             ],
             sources: [
                 "AppRelease.swift",
+                "AppLocalization.swift",
                 "CompletionDetector.swift",
                 "InboxModels.swift",
                 "InboxRepository.swift",
@@ -35,6 +36,7 @@ let package = Package(
             path: "Sources",
             exclude: [
                 "AppRelease.swift",
+                "AppLocalization.swift",
                 "CompletionDetector.swift",
                 "InboxModels.swift",
                 "InboxRepository.swift",

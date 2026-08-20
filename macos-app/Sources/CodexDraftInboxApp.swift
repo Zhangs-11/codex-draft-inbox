@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private var itemsSubscription: AnyCancellable?
     private var completionSubscription: AnyCancellable?
+    private var languageSubscription: AnyCancellable?
     private var outsideClickMonitor: Any?
     private var previewWindow: NSWindow?
 
@@ -35,8 +36,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover)
-            button.toolTip = "Codex / Claude 会话待办"
-            button.setAccessibilityLabel("Codex / Claude 会话待办")
         }
 
         popover.behavior = .transient
@@ -59,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 guard let self, self.viewModel.completionPopoverEnabled else { return }
                 self.showPopover(activating: false)
             }
+        languageSubscription = viewModel.$appLanguage.sink { [weak self] _ in
+            self?.updateLocalizedChrome()
+        }
         updateStatusItem(count: viewModel.items.count)
 
         if ProcessInfo.processInfo.environment["CODEX_DRAFT_INBOX_SHOW_ON_LAUNCH"] == "1" {
@@ -143,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Codex 草稿待办 · 验收预览"
+        window.title = viewModel.strings[.previewTitle]
         window.titlebarAppearsTransparent = true
         window.contentViewController = NSHostingController(
             rootView: InboxPanel(viewModel: viewModel) { [weak self] in
@@ -158,12 +160,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func updateStatusItem(count: Int) {
         guard let button = statusItem.button else { return }
+        let tooltip = viewModel.strings[.menuTooltip]
         button.image = NSImage(
             systemSymbolName: count == 0 ? "text.bubble" : "text.bubble.fill",
-            accessibilityDescription: "Codex 草稿待办"
+            accessibilityDescription: tooltip
         )
+        button.toolTip = tooltip
+        button.setAccessibilityLabel(tooltip)
         button.imagePosition = count == 0 ? .imageOnly : .imageLeading
         button.title = count == 0 ? "" : "\(count)"
         button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+    }
+
+    private func updateLocalizedChrome() {
+        updateStatusItem(count: viewModel.items.count)
+        previewWindow?.title = viewModel.strings[.previewTitle]
     }
 }

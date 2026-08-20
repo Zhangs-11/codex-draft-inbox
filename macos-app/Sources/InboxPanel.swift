@@ -7,6 +7,7 @@ struct InboxPanel: View {
     let onDismiss: () -> Void
 
     private let accent = Color(red: 0.89, green: 0.42, blue: 0.25)
+    private var strings: AppStrings { viewModel.strings }
 
     init(viewModel: InboxViewModel, onDismiss: @escaping () -> Void) {
         self.viewModel = viewModel
@@ -30,7 +31,8 @@ struct InboxPanel: View {
                                 InboxRow(
                                     item: item,
                                     accent: accent,
-                                    isNewlyCompleted: viewModel.newlyCompletedThreadIDs.contains(item.threadID)
+                                    isNewlyCompleted: viewModel.newlyCompletedThreadIDs.contains(item.threadID),
+                                    strings: strings
                                 ) {
                                     TaskOpenCoordinator.perform(
                                         open: { viewModel.openTask(item) },
@@ -78,9 +80,9 @@ struct InboxPanel: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("会话待办")
+                Text(strings[.inboxTitle])
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
-                Text(viewModel.items.isEmpty ? "没有等待你处理的任务" : "进行中，或等待你处理")
+                Text(viewModel.items.isEmpty ? strings[.noPendingTasks] : strings[.pendingTasks])
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             }
@@ -111,8 +113,8 @@ struct InboxPanel: View {
                 .frame(width: 26, height: 26)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("刷新")
-            .help(viewModel.isRefreshing ? "刷新中" : "刷新")
+            .accessibilityLabel(strings[.refresh])
+            .help(viewModel.isRefreshing ? strings[.refreshing] : strings[.refresh])
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -131,9 +133,9 @@ struct InboxPanel: View {
                     .foregroundStyle(.secondary)
             }
             VStack(spacing: 6) {
-                Text("都处理完了")
+                Text(strings[.allHandled])
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
-                Text("任务启动后会出现在这里。\n只有点“已处理”才会移除。")
+                Text(strings[.emptyDescription])
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -160,7 +162,7 @@ struct InboxPanel: View {
 
     private var footer: some View {
         HStack {
-            Label("本机保存", systemImage: "lock.fill")
+            Label(strings[.storedLocally], systemImage: "lock.fill")
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(.tertiary)
             Spacer()
@@ -172,17 +174,17 @@ struct InboxPanel: View {
                         .controlSize(.mini)
                         .frame(width: 54)
                 } else {
-                    Text("检查更新")
+                    Text(strings[.checkUpdates])
                 }
             }
             .disabled(viewModel.isCheckingForUpdates)
             .font(.system(size: 10.5, weight: .medium))
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            Label("登录自动启动", systemImage: "arrow.clockwise")
+            Label(strings[.startsAtLogin], systemImage: "arrow.clockwise")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
-            Button("退出") {
+            Button(strings[.quit]) {
                 NSApplication.shared.terminate(nil)
             }
             .font(.system(size: 10.5, weight: .medium))
@@ -201,14 +203,14 @@ struct InboxPanel: View {
                 Image(systemName: "arrow.down.circle.fill")
                     .foregroundStyle(Color.blue)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("菜单栏 App 有新版本 v\(release.displayVersion)")
+                    Text("\(strings[.updateAvailable]) v\(release.displayVersion)")
                         .font(.system(size: 11.5, weight: .semibold))
-                    Text("前往 GitHub 查看说明并下载")
+                    Text(strings[.updateDetails])
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("前往更新") {
+                Button(strings[.openUpdate]) {
                     viewModel.openAvailableUpdate()
                 }
                 .font(.system(size: 10.5, weight: .semibold))
@@ -220,9 +222,9 @@ struct InboxPanel: View {
             .background(Color.blue.opacity(0.09))
             Divider().opacity(0.55)
         case let .current(version):
-            updateStatusBanner("已是最新版本 v\(version)", color: .green)
+            updateStatusBanner("\(strings[.latestVersion]) v\(version)", color: .green)
         case .failed:
-            updateStatusBanner("检查更新失败，请稍后再试", color: .orange)
+            updateStatusBanner(strings[.updateCheckFailed], color: .orange)
         case .idle:
             EmptyView()
         }
@@ -246,23 +248,51 @@ struct InboxPanel: View {
 
     private var reminderSettings: some View {
         VStack(spacing: 0) {
+            languageSelection
+            Divider().opacity(0.35)
             completionReminder
             Divider().opacity(0.35)
             notificationPrivacy
         }
     }
 
+    private var languageSelection: some View {
+        HStack(spacing: 10) {
+            Label(strings[.language], systemImage: "globe")
+                .font(.system(size: 11, weight: .medium))
+            Spacer()
+            Picker(
+                strings[.language],
+                selection: Binding(
+                    get: { viewModel.appLanguage },
+                    set: { viewModel.setLanguage($0) }
+                )
+            ) {
+                Text(strings[.followSystem]).tag(AppLanguage.system)
+                Text(strings[.simplifiedChinese]).tag(AppLanguage.simplifiedChinese)
+                Text(strings[.english]).tag(AppLanguage.english)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 150, alignment: .trailing)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+    }
+
     private var completionReminder: some View {
         HStack(spacing: 10) {
-            Label("完成时自动展开", systemImage: "bell.badge.fill")
-                .font(.system(size: 11, weight: .medium))
-            Text("新完成任务会置顶并短暂高亮")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Label(strings[.autoOpenOnCompletion], systemImage: "bell.badge.fill")
+                    .font(.system(size: 11, weight: .medium))
+                Text(strings[.autoOpenDescription])
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Spacer()
             Toggle(
-                "完成时自动展开",
+                strings[.autoOpenOnCompletion],
                 isOn: Binding(
                     get: { viewModel.completionPopoverEnabled },
                     set: { viewModel.setCompletionPopover(enabled: $0) }
@@ -278,15 +308,17 @@ struct InboxPanel: View {
 
     private var notificationPrivacy: some View {
         HStack(spacing: 10) {
-            Label("通知显示草稿", systemImage: "rectangle.inset.filled.and.person.filled")
-                .font(.system(size: 11, weight: .medium))
-            Text("关闭时锁屏通知只显示待办提醒")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Label(strings[.showDraftInNotifications], systemImage: "rectangle.inset.filled.and.person.filled")
+                    .font(.system(size: 11, weight: .medium))
+                Text(strings[.showDraftDescription])
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Spacer()
             Toggle(
-                "通知显示草稿",
+                strings[.showDraftInNotifications],
                 isOn: Binding(
                     get: { viewModel.notificationDraftPreviewEnabled },
                     set: { viewModel.setNotificationDraftPreview(enabled: $0) }
@@ -328,6 +360,7 @@ private struct InboxRow: View {
     let item: PendingItem
     let accent: Color
     let isNewlyCompleted: Bool
+    let strings: AppStrings
     let onOpen: () -> Void
     let onHandled: () -> Void
     let onSaveDraft: (String) -> Void
@@ -367,7 +400,7 @@ private struct InboxRow: View {
                         .font(.system(size: 13.5, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                     if item.isCompletionUnread {
-                        Label("未读", systemImage: "circle.fill")
+                        Label(strings[.unread], systemImage: "circle.fill")
                             .font(.system(size: 9, weight: .semibold))
                             .labelStyle(.titleAndIcon)
                             .foregroundStyle(Color(red: 0.31, green: 0.56, blue: 0.96))
@@ -377,7 +410,7 @@ private struct InboxRow: View {
                                 Color(red: 0.31, green: 0.56, blue: 0.96).opacity(0.13),
                                 in: Capsule()
                             )
-                            .accessibilityLabel("已完成但未读")
+                            .accessibilityLabel(strings[.unreadAccessibility])
                     }
                     if let lifecycle = lifecycleBadge {
                         Text(lifecycle.text)
@@ -389,7 +422,7 @@ private struct InboxRow: View {
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(isNewlyCompleted ? "刚刚完成" : statusText(item.status))
+                        Text(isNewlyCompleted ? strings[.justCompleted] : statusText(item.status))
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(statusColor)
                         Text(relativeTime(item.effectiveActivityAt))
@@ -399,10 +432,10 @@ private struct InboxRow: View {
                 }
 
                 if item.source == "claude" {
-                    ClaudeDraftEditor(initialText: item.draft, onSave: onSaveDraft)
+                    ClaudeDraftEditor(initialText: item.draft, strings: strings, onSave: onSaveDraft)
                         .id("\(item.observationToken ?? ""):\(item.draft)")
                 } else if item.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("暂无草稿，等待你处理")
+                    Text(strings[.noDraft])
                         .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
                 } else {
@@ -424,7 +457,7 @@ private struct InboxRow: View {
                     .opacity(canOpen ? 1 : 0.48)
 
                     Button(action: onHandled) {
-                        Label("已处理", systemImage: "checkmark")
+                        Label(strings[.handled], systemImage: "checkmark")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(SecondaryActionStyle())
@@ -472,28 +505,28 @@ private struct InboxRow: View {
     }
 
     private func relativeTime(_ raw: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: raw) else { return "刚刚" }
+        guard let date = ISO8601DateFormatter().date(from: raw) else { return strings[.now] }
         let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: strings.localeIdentifier)
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func statusText(_ status: String?) -> String {
         switch status {
-        case "running": "执行中"
-        case "draft": "有草稿"
-        case "failed": "执行失败"
-        case "aborted": "已中止"
-        default: "已完成"
+        case "running": strings[.statusRunning]
+        case "draft": strings[.statusDraft]
+        case "failed": strings[.statusFailed]
+        case "aborted": strings[.statusAborted]
+        default: strings[.statusCompleted]
         }
     }
 
     private var openButtonTitle: String {
-        if item.lifecycle == "deleted" { return "会话已删除" }
-        if item.lifecycle == "unavailable" { return "会话不可见" }
-        guard item.source == "claude" else { return "打开任务" }
-        return item.status == "running" ? "打开终端" : "恢复会话"
+        if item.lifecycle == "deleted" { return strings[.conversationDeleted] }
+        if item.lifecycle == "unavailable" { return strings[.conversationUnavailable] }
+        guard item.source == "claude" else { return strings[.openTask] }
+        return item.status == "running" ? strings[.openTerminal] : strings[.resumeConversation]
     }
 
     private var canOpen: Bool {
@@ -502,10 +535,10 @@ private struct InboxRow: View {
 
     private var lifecycleBadge: (text: String, color: Color)? {
         switch item.lifecycle {
-        case "archived": ("已归档", Color.secondary)
-        case "deleted": ("已删除", Color.red)
-        case "unavailable": ("不可见", Color.secondary)
-        case "unknown": ("状态未知", Color.orange)
+        case "archived": (strings[.lifecycleArchived], Color.secondary)
+        case "deleted": (strings[.lifecycleDeleted], Color.red)
+        case "unavailable": (strings[.lifecycleUnavailable], Color.secondary)
+        case "unknown": (strings[.lifecycleUnknown], Color.orange)
         default: nil
         }
     }
@@ -513,20 +546,22 @@ private struct InboxRow: View {
 
 private struct ClaudeDraftEditor: View {
     @State private var text: String
+    let strings: AppStrings
     let onSave: (String) -> Void
 
-    init(initialText: String, onSave: @escaping (String) -> Void) {
+    init(initialText: String, strings: AppStrings, onSave: @escaping (String) -> Void) {
         _text = State(initialValue: initialText)
+        self.strings = strings
         self.onSave = onSave
     }
 
     var body: some View {
         HStack(spacing: 7) {
-            TextField("写下准备发给 Claude 的下一句话", text: $text)
+            TextField(strings[.claudeDraftPlaceholder], text: $text)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11.5))
                 .onSubmit { onSave(text) }
-            Button("保存") {
+            Button(strings[.save]) {
                 onSave(text)
             }
             .font(.system(size: 10.5, weight: .semibold))

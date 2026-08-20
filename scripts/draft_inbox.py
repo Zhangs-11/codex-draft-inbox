@@ -34,6 +34,34 @@ DEFAULT_SETTINGS = {
     "version": 1,
     "show_notification_draft_preview": False,
     "show_completion_popover": True,
+    "language": "system",
+}
+SUPPORTED_LANGUAGES = {"system", "zh-Hans", "en"}
+LOCALIZED_TEXT = {
+    "zh-Hans": {
+        "notification_title": "Codex 草稿待办",
+        "draft_prefix": "草稿：{draft}",
+        "task_completed": "任务已完成，等待你处理",
+        "task_failed": "任务执行失败，等待你处理",
+        "task_aborted": "任务已中止，等待你处理",
+        "task_started": "任务已启动，等待你处理",
+        "current_pending": "当前会话仍在待办中",
+        "pending_count_one": "还有 {count} 个会话待办",
+        "pending_count_many": "还有 {count} 个会话待办",
+        "claude_session": "Claude 会话 {id}",
+    },
+    "en": {
+        "notification_title": "Codex Draft Inbox",
+        "draft_prefix": "Draft: {draft}",
+        "task_completed": "Task completed and waiting for you",
+        "task_failed": "Task failed and is waiting for you",
+        "task_aborted": "Task aborted and is waiting for you",
+        "task_started": "Task started and is waiting for you",
+        "current_pending": "This conversation is still in your inbox",
+        "pending_count_one": "{count} conversation is waiting for you",
+        "pending_count_many": "{count} conversations are waiting for you",
+        "claude_session": "Claude conversation {id}",
+    },
 }
 
 
@@ -91,10 +119,14 @@ def _load_settings() -> dict[str, Any]:
     payload = _read_json(_settings_path(), DEFAULT_SETTINGS)
     if not isinstance(payload, dict):
         payload = dict(DEFAULT_SETTINGS)
+    language = payload.get("language")
+    if language not in SUPPORTED_LANGUAGES:
+        language = "system"
     return {
         "version": 1,
         "show_notification_draft_preview": bool(payload.get("show_notification_draft_preview", False)),
         "show_completion_popover": bool(payload.get("show_completion_popover", True)),
+        "language": language,
     }
 
 
@@ -121,6 +153,55 @@ def set_notification_draft_preview(enabled: bool) -> bool:
 
 def set_completion_popover(enabled: bool) -> bool:
     return _set_boolean_setting("show_completion_popover", enabled)
+
+
+def set_language(language: str) -> bool:
+    if language not in SUPPORTED_LANGUAGES:
+        raise ValueError(f"Unsupported language: {language}")
+    path = _settings_path()
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            previous = _load_settings()
+            payload = {**previous, "language": language}
+            if previous == payload and path.is_file():
+                return False
+            _write_json_atomic(path, payload)
+            return True
+        finally:
+            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _effective_language() -> str:
+    configured = str(_load_settings().get("language") or "system")
+    if configured in {"zh-Hans", "en"}:
+        return configured
+    preferred = os.environ.get("CODEX_DRAFT_INBOX_SYSTEM_LANGUAGE", "")
+    if not preferred and sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["/usr/bin/defaults", "read", "-g", "AppleLanguages"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            preferred = result.stdout
+        except (OSError, subprocess.TimeoutExpired):
+            preferred = ""
+    return "zh-Hans" if re.search(r"(^|[^a-z])zh([^a-z]|$)", preferred, re.I) else "en"
+
+
+def _tr(key: str, **values: Any) -> str:
+    template = LOCALIZED_TEXT[_effective_language()][key]
+    return template.format(**values)
+
+
+def _pending_count_text(count: int) -> str:
+    key = "pending_count_one" if count == 1 else "pending_count_many"
+    return _tr(key, count=count)
 
 
 def _empty_state() -> dict[str, Any]:
@@ -442,16 +523,17 @@ def _normalize_preview(text: str, limit: int = NOTIFICATION_PREVIEW_LENGTH) -> s
 
 def _notification_body(draft: str, fallback: str) -> str:
     if draft.strip() and _load_settings()["show_notification_draft_preview"]:
-        return f"草稿：{_normalize_preview(draft)}"
+        return _tr("draft_prefix", draft=_normalize_preview(draft))
     return fallback
 
 
 def _status_notification_fallback(status: str) -> str:
-    return {
-        "completed": "任务已完成，等待你处理",
-        "failed": "任务执行失败，等待你处理",
-        "aborted": "任务已中止，等待你处理",
-    }.get(status, "任务已启动，等待你处理")
+    key = {
+        "completed": "task_completed",
+        "failed": "task_failed",
+        "aborted": "task_aborted",
+    }.get(status, "task_started")
+    return _tr(key)
 
 
 def _apple_script_string(value: str) -> str:
@@ -461,7 +543,8 @@ def _apple_script_string(value: str) -> str:
 def _notify(body: str, *, subtitle: str = "") -> None:
     if os.environ.get("CODEX_DRAFT_INBOX_DISABLE_NOTIFICATION") == "1" or sys.platform != "darwin":
         return
-    script = f'display notification "{_apple_script_string(body)}" with title "Codex 草稿待办"'
+    title = _apple_script_string(_tr("notification_title"))
+    script = f'display notification "{_apple_script_string(body)}" with title "{title}"'
     if subtitle:
         script += f' subtitle "{_apple_script_string(_normalize_preview(subtitle, 80))}"'
     try:
@@ -577,7 +660,7 @@ def capture(payload: dict[str, Any], *, remember: bool = True) -> bool:
 
     changed = _mutate_state(add_item)
     if created:
-        body = _notification_body(draft, "任务已完成，等待你处理")
+        body = _notification_body(draft, _tr("task_completed"))
         _notify(body, subtitle=title)
     if remember:
         _remember_observation(thread_id, token, "hook")
@@ -717,7 +800,13 @@ def _normalize_pending_thread_ids() -> None:
                 title = str(item.get("title") or "")
                 is_empty_placeholder = (
                     not str(item.get("draft") or "").strip()
-                    and bool(re.fullmatch(r"Claude 会话 [0-9a-f]{8}", title, re.I))
+                    and bool(
+                        re.fullmatch(
+                            r"Claude (?:会话|conversation) [0-9a-f]{8}",
+                            title,
+                            re.I,
+                        )
+                    )
                 )
                 if _is_internal_claude_message(title) or is_empty_placeholder:
                     items.pop(thread_id, None)
@@ -965,7 +1054,10 @@ def handle_claude_event(payload: dict[str, Any]) -> bool:
             draft = str(state["drafts"].get(thread_id) or "")
             counter = int(session.get("counter") or 1)
             token = f"claude:{session_id}:{counter}:draft:{_draft_fingerprint(draft)}"
-            title = str(session.get("last_user_message") or f"Claude 会话 {session_id[:8]}")
+            title = str(
+                session.get("last_user_message")
+                or _tr("claude_session", id=session_id[:8])
+            )
             cwd = str(session.get("cwd") or "")
             if event == "Stop":
                 status = "completed"
@@ -1033,7 +1125,10 @@ def set_claude_draft(thread_id: str, text: str) -> bool:
             state["drafts"][thread_id] = text
             counter = int(session.get("counter") or 1)
             token = f"claude:{session_id}:{counter}:draft:{_draft_fingerprint(text)}"
-            title = str(session.get("last_user_message") or f"Claude 会话 {session_id[:8]}")
+            title = str(
+                session.get("last_user_message")
+                or _tr("claude_session", id=session_id[:8])
+            )
             cwd = str(session.get("cwd") or "")
             status = str(session.get("status") or "draft")
             _write_json_atomic(state_path, state)
@@ -1346,13 +1441,13 @@ def remind(payload: dict[str, Any]) -> None:
     current = next((item for item in items if item.get("thread_id") == current_thread), None)
     if current:
         _notify(
-            _notification_body(str(current.get("draft", "")), "当前会话仍在待办中"),
+            _notification_body(str(current.get("draft", "")), _tr("current_pending")),
             subtitle=str(current.get("title", current_thread)),
         )
         return
     newest = items[0]
     newest_draft = str(newest.get("draft", ""))
-    fallback = f"还有 {len(items)} 个会话待办"
+    fallback = _pending_count_text(len(items))
     _notify(
         _notification_body(newest_draft, fallback),
         subtitle=str(newest.get("title", "")),
@@ -1389,6 +1484,8 @@ def main() -> int:
     preview_parser.add_argument("--enabled", choices=("true", "false"), required=True)
     completion_parser = subparsers.add_parser("set-completion-popover")
     completion_parser.add_argument("--enabled", choices=("true", "false"), required=True)
+    language_parser = subparsers.add_parser("set-language")
+    language_parser.add_argument("--language", choices=tuple(sorted(SUPPORTED_LANGUAGES)), required=True)
     claude_draft_parser = subparsers.add_parser("set-claude-draft")
     claude_draft_parser.add_argument("--thread-id", required=True)
     claude_draft_parser.add_argument("--text", default="")
@@ -1417,6 +1514,10 @@ def main() -> int:
 
     if args.command == "set-completion-popover":
         set_completion_popover(args.enabled == "true")
+        return 0
+
+    if args.command == "set-language":
+        set_language(args.language)
         return 0
 
     if args.command == "sync":
