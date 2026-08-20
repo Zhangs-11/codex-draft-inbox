@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop")
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd")
 
 
 def _is_draft_inbox_hook(entry: Any) -> bool:

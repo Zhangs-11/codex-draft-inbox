@@ -269,15 +269,40 @@ final class InboxViewModel: ObservableObject {
 
     func openTask(_ item: PendingItem) {
         if item.source == "claude" {
-            openClaudeSession(item)
+            if openClaudeSession(item) {
+                markRead(item)
+            }
             return
         }
         guard let url = URL(string: "codex://threads/\(item.threadID)") else {
             errorMessage = "任务链接无效"
             return
         }
-        if !NSWorkspace.shared.open(url) {
+        if NSWorkspace.shared.open(url) {
+            refreshCodexReadStateSoon()
+        } else {
             errorMessage = "Codex 没有接受任务链接"
+        }
+    }
+
+    private func markRead(_ item: PendingItem) {
+        guard item.source == "claude", item.isCompletionUnread, let syncService else { return }
+        Task.detached {
+            do {
+                try syncService.markRead(threadID: item.threadID)
+                await MainActor.run { [weak self] in self?.reload() }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = "未读状态更新失败"
+                }
+            }
+        }
+    }
+
+    private func refreshCodexReadStateSoon() {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            self?.synchronize()
         }
     }
 
@@ -295,7 +320,7 @@ final class InboxViewModel: ObservableObject {
         }
     }
 
-    private func openClaudeSession(_ item: PendingItem) {
+    private func openClaudeSession(_ item: PendingItem) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         if item.status == "running" {
@@ -303,7 +328,7 @@ final class InboxViewModel: ObservableObject {
         } else {
             guard let sessionID = item.externalSessionID, !sessionID.isEmpty else {
                 errorMessage = "缺少 Claude session ID"
-                return
+                return false
             }
             let cwd = item.cwd?.isEmpty == false ? item.cwd! : FileManager.default.homeDirectoryForCurrentUser.path
             let command = "cd \(shellQuote(cwd)) && if command -v claude >/dev/null 2>&1; then claude --resume \(shellQuote(sessionID)); else echo '未找到 claude，请先安装 Claude Code 或检查 PATH'; fi"
@@ -312,8 +337,10 @@ final class InboxViewModel: ObservableObject {
         }
         do {
             try process.run()
+            return true
         } catch {
             errorMessage = "无法打开 Claude Code 会话"
+            return false
         }
     }
 

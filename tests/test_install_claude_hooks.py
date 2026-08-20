@@ -50,6 +50,8 @@ class InstallClaudeHooksTests(unittest.TestCase):
             self.assertEqual(len(payload["hooks"]["Stop"]), 2)
             self.assertEqual(len(payload["hooks"]["SessionStart"]), 1)
             self.assertEqual(len(payload["hooks"]["UserPromptSubmit"]), 1)
+            self.assertEqual(len(payload["hooks"]["StopFailure"]), 1)
+            self.assertEqual(len(payload["hooks"]["SessionEnd"]), 1)
             command = payload["hooks"]["Stop"][1]["hooks"][0]["command"]
             self.assertIn(str(script_path), command)
             self.assertTrue(command.endswith(" claude-event"))
@@ -73,6 +75,8 @@ class InstallClaudeHooksTests(unittest.TestCase):
             self.assertEqual(payload["hooks"]["Stop"], [{"hooks": [{"command": "echo keep"}]}])
             self.assertNotIn("SessionStart", payload["hooks"])
             self.assertNotIn("UserPromptSubmit", payload["hooks"])
+            self.assertNotIn("StopFailure", payload["hooks"])
+            self.assertNotIn("SessionEnd", payload["hooks"])
 
 
 if __name__ == "__main__":

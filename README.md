@@ -12,8 +12,9 @@ Codex Draft Inbox 是一个本地优先的 Codex 插件和 macOS 菜单栏伴随
 - 用户会话启动后立即进入待办；已绑定到真实 Codex 会话的非空草稿也一定展示。
 - 卡片显示真实会话标题，下面显示当前草稿；没有草稿时显示等待处理提示。
 - 会话标题跟随 Codex 侧栏名称，内部 subagent、exec 和未绑定临时草稿不会进入列表。
-- 黄色状态条表示执行中或仅有草稿，绿色表示当前 Turn 已完成。
+- 黄色状态条表示执行中或仅有草稿，绿色表示当前 Turn 已完成，红色表示执行失败，橙色表示已中止。
 - Codex 与 Claude Code 混合按最近活动时间排序；任务刚完成时自动展开面板、置顶并短暂高亮。
+- 已完成但尚未通过插件打开的任务显示“未读”；点击“打开任务 / 恢复会话”后取消标识。
 - 已归档、已删除、不可见或暂时无法确认的 Codex 会话继续保留，并在标题旁显示标记。
 - 按最后活动时间排序；旧待办产生新 Turn 或新草稿后会回到顶部。
 - 点击“打开任务”跳回对应 Codex 会话，或在 Terminal 中恢复 Claude Code 会话。
@@ -45,7 +46,7 @@ Claude Code hooks ──────────┘                             
 |---|---|
 | 操作系统 | macOS 13 Ventura 或更高版本 |
 | Codex | 支持 Plugins 与本地会话状态的 Codex 桌面客户端 / CLI |
-| Claude Code | 可选；需要支持 `SessionStart`、`UserPromptSubmit` 和 `Stop` hooks |
+| Claude Code | 可选；需要支持 `SessionStart`、`UserPromptSubmit`、`Stop`、`StopFailure` 和 `SessionEnd` hooks |
 | Python | `/usr/bin/python3`，Python 3.9 或更高版本 |
 | 构建工具 | Xcode Command Line Tools，包含 Swift 6 与 `codesign` |
 
@@ -126,7 +127,7 @@ xcode-select --install
 /usr/bin/python3 ./scripts/install_claude_hooks.py
 ```
 
-安装器只会更新 `~/.claude/settings.json` 中本项目使用的三类 Hook，并保留已有的其他设置和 Hook。重新启动 Claude Code 后生效。
+安装器只会更新 `~/.claude/settings.json` 中本项目使用的五类 Hook，并保留已有的其他设置和 Hook。重新启动 Claude Code 后生效。
 
 ## 使用方法
 
@@ -174,6 +175,8 @@ Codex 中也可以直接询问“哪些会话还没处理”或要求打开、�
 从 v0.3.0 开始，Codex 和 Claude Code 使用统一单列并按最近活动时间全局排序。运行中的任务变为已完成时，菜单栏面板会自动展开且不抢键盘焦点，刚完成的卡片会短暂显示绿色动态高亮；点击桌面其他位置即可关闭。可以在面板底部关闭“完成时自动展开”。
 
 从 v0.3.1 开始，自动展开期间会监听其他 App 或桌面的鼠标点击并主动关闭面板，不再只依赖 macOS 对 transient popover 的默认关闭行为。
+
+从 v0.3.2 开始，插件会为新完成任务展示“未读”状态。Codex 直接跟随客户端原生蓝点，因此从侧栏或插件进入会话后都会同步为已读；Claude Code 没有对应字段，由插件在成功点击“恢复会话”后清除。查看自动弹窗不算已读，同一会话后续产生新任务并再次完成时会重新标记。失败和中止会显示独立状态，不会触发成功提醒；升级安装会等待旧进程退出并验证新版 App 已启动。
 
 首次安装或从旧版 LaunchAgent 迁移时，macOS 可能显示一次登录项系统通知，因为菜单栏 App 会注册为登录后自动启动。这是 macOS 的透明性提示，应用无法静默关闭；迁移完成后的更新不会再创建新的 legacy 后台项目。
 

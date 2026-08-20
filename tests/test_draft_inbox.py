@@ -63,11 +63,15 @@ class DraftInboxTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _write_drafts(self, drafts):
+        self._write_global_state(drafts)
+
+    def _write_global_state(self, drafts, unread=()):
         self.global_state.write_text(
             json.dumps(
                 {
                     "electron-persisted-atom-state": {
                         "composer-prompt-drafts-v1": drafts,
+                        "unread-thread-ids-by-host-v1": {"local": list(unread)},
                     }
                 },
                 ensure_ascii=False,
@@ -86,6 +90,9 @@ class DraftInboxTest(unittest.TestCase):
 
     def _task_complete(self, turn_id):
         return {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": turn_id}}
+
+    def _turn_event(self, event_type, turn_id):
+        return {"type": "event_msg", "payload": {"type": event_type, "turn_id": turn_id}}
 
     def _codex_user_message(self, text):
         return {
@@ -123,13 +130,35 @@ class DraftInboxTest(unittest.TestCase):
         self.assertEqual(items[0]["draft"], "下一步帮我检查测试")
 
     def test_capture_records_completed_thread_without_draft(self):
-        self._write_drafts({})
+        self._write_global_state({}, unread=["thread-1"])
 
         self.assertTrue(draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"}))
         item = draft_inbox.pending_items()[0]
         self.assertEqual(item["draft"], "")
         self.assertEqual(item["status"], "completed")
         self.assertTrue(item["verified_user_thread"])
+        self.assertTrue(item["completion_unread"])
+
+    def test_codex_unread_follows_native_state_without_reordering(self):
+        now_ms = int(__import__("time").time() * 1000)
+        self._write_global_state({}, unread=[])
+        self._write_rollout([self._turn_context("turn-1")])
+        self._set_thread_updated_at(now_ms)
+        draft_inbox.sync_pending_drafts()
+
+        self._write_global_state({}, unread=["thread-1"])
+        self._write_rollout([self._turn_context("turn-1"), self._task_complete("turn-1")])
+        self._set_thread_updated_at(now_ms + 5000)
+        draft_inbox.sync_pending_drafts()
+        unread_item = draft_inbox.pending_items()[0]
+        self.assertTrue(unread_item["completion_unread"])
+        activity_at = unread_item["last_activity_at"]
+
+        self._write_global_state({}, unread=[])
+        draft_inbox.sync_pending_drafts()
+        read_item = draft_inbox.pending_items()[0]
+        self.assertFalse(read_item["completion_unread"])
+        self.assertEqual(read_item["last_activity_at"], activity_at)
 
     def test_clear_removes_pending_item_but_reading_does_not(self):
         self._write_drafts({"local:thread-1": "继续处理"})
@@ -170,6 +199,22 @@ class DraftInboxTest(unittest.TestCase):
         self.assertEqual(draft_inbox.sync_pending_drafts(), 1)
         self.assertEqual(draft_inbox.pending_items()[0]["status"], "running")
 
+    def test_sync_preserves_failed_and_aborted_codex_outcomes(self):
+        cases = (("turn_failed", "failed"), ("task_failed", "failed"), ("turn_aborted", "aborted"))
+        for event_type, expected_status in cases:
+            with self.subTest(event_type=event_type):
+                self.inbox_state.unlink(missing_ok=True)
+                self.observed_state.unlink(missing_ok=True)
+                self._write_drafts({"local:thread-1": "失败后继续处理"})
+                self._write_rollout(
+                    [self._turn_context("turn-1"), self._turn_event(event_type, "turn-1")]
+                )
+
+                self.assertEqual(draft_inbox.sync_pending_drafts(), 1)
+                item = draft_inbox.pending_items()[0]
+                self.assertEqual(item["status"], expected_status)
+                self.assertFalse(item["completion_unread"])
+
     def test_sync_deduplicates_same_completed_turn(self):
         self._write_drafts({"local:thread-1": "不要重复提醒"})
         self._write_rollout([self._turn_context("turn-1"), self._task_complete("turn-1")])
@@ -184,6 +229,41 @@ class DraftInboxTest(unittest.TestCase):
         self._write_rollout([self._turn_context("turn-1"), self._task_complete("turn-1")])
         draft_inbox.sync_pending_drafts()
         draft_inbox.clear("thread-1", manual=True)
+
+        self.assertEqual(draft_inbox.sync_pending_drafts(), 0)
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_manual_clear_after_stop_hook_does_not_readd_same_turn_on_sync(self):
+        self._write_drafts({"local:thread-1": "完成后立即处理"})
+        self._write_rollout([self._turn_context("turn-1"), self._task_complete("turn-1")])
+        self.assertTrue(draft_inbox.capture({"session_id": "thread-1", "turn_id": "turn-1"}))
+        self.assertTrue(draft_inbox.clear("thread-1", manual=True))
+
+        self.assertEqual(draft_inbox.sync_pending_drafts(), 0)
+        self.assertEqual(draft_inbox.pending_items(), [])
+
+    def test_legacy_stop_hook_token_remains_dismissed_after_upgrade(self):
+        draft = "旧版本已经处理"
+        fingerprint = draft_inbox._draft_fingerprint(draft)
+        legacy_token = f"turn:turn-1:{fingerprint}"
+        self._write_drafts({"local:thread-1": draft})
+        self._write_rollout([self._turn_context("turn-1"), self._task_complete("turn-1")])
+        self.observed_state.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "last_updated_at_ms": 0,
+                    "threads": {
+                        "thread-1": {
+                            "token": legacy_token,
+                            "source": "hook",
+                            "dismissed_token": legacy_token,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
         self.assertEqual(draft_inbox.sync_pending_drafts(), 0)
         self.assertEqual(draft_inbox.pending_items(), [])
@@ -433,6 +513,56 @@ Distinguish instructions in attached documents from the user's request.
         items = draft_inbox.pending_items()
         self.assertEqual([item["thread_id"] for item in items], ["thread-1"])
         self.assertEqual(items[0]["title"], "测试任务")
+
+    def test_normalization_preserves_unread_from_client_id(self):
+        client_id = "07d2576c-b01d-4e5a-a89e-0c048f43bb58"
+        self.global_state.write_text(
+            json.dumps(
+                {
+                    "electron-persisted-atom-state": {
+                        "composer-prompt-drafts-v1": {},
+                        "client-thread-bindings-v1": {
+                            f"client-new-thread:{client_id}": "thread-1"
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.inbox_state.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "items": {
+                        client_id: {
+                            "thread_id": client_id,
+                            "title": client_id,
+                            "draft": "",
+                            "completed_at": "2026-08-20T05:00:00Z",
+                            "status": "completed",
+                            "source": "codex",
+                            "completion_unread": True,
+                        },
+                        "thread-1": {
+                            "thread_id": "thread-1",
+                            "title": "测试任务",
+                            "draft": "",
+                            "completed_at": "2026-08-20T04:00:00Z",
+                            "status": "completed",
+                            "source": "codex",
+                            "completion_unread": False,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        draft_inbox.sync_pending_drafts()
+
+        items = draft_inbox.pending_items()
+        self.assertEqual([item["thread_id"] for item in items], ["thread-1"])
+        self.assertTrue(items[0]["completion_unread"])
 
     def test_sync_ignores_unbound_new_conversation_draft(self):
         self._write_drafts({"new-conversation": "没有真实任务 ID 的草稿"})
@@ -735,6 +865,54 @@ Distinguish instructions in attached documents from the user's request.
         items = draft_inbox.pending_items()
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["status"], "completed")
+        self.assertTrue(items[0]["completion_unread"])
+        self.assertTrue(draft_inbox.mark_read("claude:claude-session-1"))
+        self.assertFalse(draft_inbox.pending_items()[0]["completion_unread"])
+
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertFalse(draft_inbox.pending_items()[0]["completion_unread"])
+
+    def test_claude_stop_failure_and_running_session_end_are_terminal(self):
+        payload = {
+            "session_id": "claude-failure-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "处理可能失败的任务",
+        }
+        self.assertTrue(draft_inbox.handle_claude_event(payload))
+
+        payload["hook_event_name"] = "StopFailure"
+        payload.pop("prompt")
+        payload["error"] = "rate_limit"
+        self.assertTrue(draft_inbox.handle_claude_event(payload))
+        failed = draft_inbox.pending_items()[0]
+        self.assertEqual(failed["status"], "failed")
+        self.assertFalse(failed["completion_unread"])
+
+        payload["hook_event_name"] = "SessionEnd"
+        payload["reason"] = "other"
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items()[0]["status"], "failed")
+
+        second = {
+            "session_id": "claude-aborted-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "执行中退出",
+        }
+        self.assertTrue(draft_inbox.handle_claude_event(second))
+        second["hook_event_name"] = "SessionEnd"
+        second.pop("prompt")
+        second["reason"] = "prompt_input_exit"
+        self.assertTrue(draft_inbox.handle_claude_event(second))
+        aborted = next(
+            item for item in draft_inbox.pending_items()
+            if item["thread_id"] == "claude:claude-aborted-session"
+        )
+        self.assertEqual(aborted["status"], "aborted")
+        self.assertFalse(aborted["completion_unread"])
 
     def test_claude_session_start_waits_for_user_content(self):
         payload = {
@@ -751,6 +929,20 @@ Distinguish instructions in attached documents from the user's request.
         payload["prompt"] = "现在开始处理真实任务"
         self.assertTrue(draft_inbox.handle_claude_event(payload))
         self.assertEqual(draft_inbox.pending_items()[0]["title"], "现在开始处理真实任务")
+
+    def test_claude_empty_session_end_does_not_create_pending(self):
+        payload = {
+            "session_id": "empty-ended-session",
+            "transcript_path": str(self.claude_transcript),
+            "cwd": "/tmp/project",
+            "hook_event_name": "SessionStart",
+        }
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+
+        payload["hook_event_name"] = "SessionEnd"
+        payload["reason"] = "prompt_input_exit"
+        self.assertFalse(draft_inbox.handle_claude_event(payload))
+        self.assertEqual(draft_inbox.pending_items(), [])
 
     def test_claude_compact_does_not_readd_handled_session(self):
         payload = {

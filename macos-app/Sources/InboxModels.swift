@@ -25,6 +25,7 @@ public struct PendingItem: Codable, Equatable, Identifiable {
     public let source: String?
     public let externalSessionID: String?
     public let cwd: String?
+    public let completionUnread: Bool?
 
     public var id: String { threadID }
 
@@ -40,7 +41,8 @@ public struct PendingItem: Codable, Equatable, Identifiable {
         observationToken: String? = nil,
         source: String? = nil,
         externalSessionID: String? = nil,
-        cwd: String? = nil
+        cwd: String? = nil,
+        completionUnread: Bool? = nil
     ) {
         self.threadID = threadID
         self.title = title
@@ -54,6 +56,7 @@ public struct PendingItem: Codable, Equatable, Identifiable {
         self.source = source
         self.externalSessionID = externalSessionID
         self.cwd = cwd
+        self.completionUnread = completionUnread
     }
 
     enum CodingKeys: String, CodingKey {
@@ -69,7 +72,9 @@ public struct PendingItem: Codable, Equatable, Identifiable {
         case source
         case externalSessionID = "external_session_id"
         case cwd
+        case completionUnread = "completion_unread"
     }
 
     public var effectiveActivityAt: String { lastActivityAt ?? completedAt }
+    public var isCompletionUnread: Bool { completionUnread == true && status == "completed" }
 }

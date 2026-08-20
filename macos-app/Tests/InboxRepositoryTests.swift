@@ -19,6 +19,10 @@ struct InboxRepositorySelfTests {
             try completionDetectorIgnoresInitialSnapshot()
             try completionDetectorEmitsRunningTransitionOnlyOnce()
             try completionDetectorCatchesFastNewCompletion()
+            try completionDetectorCatchesNewTurnAfterPreviousCompletion()
+            try completionDetectorIgnoresDraftChangesAfterCompletion()
+            try completionDetectorIgnoresSyntheticGenerationRecovery()
+            try completionUnreadRequiresCompletedStatus()
             print("CodexDraftInbox self-test passed")
         } catch {
             fputs("CodexDraftInbox self-test failed: \(error)\n", stderr)
@@ -198,6 +202,95 @@ struct InboxRepositorySelfTests {
         )
     }
 
+    private static func completionDetectorCatchesNewTurnAfterPreviousCompletion() throws {
+        var detector = CompletionDetector()
+        let first = item(
+            id: "same-thread",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed",
+            observationToken: "turn:turn-1:draft:first"
+        )
+        let second = item(
+            id: "same-thread",
+            completedAt: "2026-08-19T09:00:00Z",
+            lastActivityAt: "2026-08-19T10:00:00Z",
+            status: "completed",
+            observationToken: "turn:turn-2:draft:second"
+        )
+        _ = detector.detect(in: [first])
+
+        try expect(
+            detector.detect(in: [second]).map(\.threadID) == ["same-thread"],
+            "同一任务在轮询间隔内完成新 Turn 时没有产生完成事件"
+        )
+    }
+
+    private static func completionDetectorIgnoresDraftChangesAfterCompletion() throws {
+        var detector = CompletionDetector()
+        let original = item(
+            id: "same-turn",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed",
+            observationToken: "turn:turn-1:draft:first"
+        )
+        let editedDraft = item(
+            id: "same-turn",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed",
+            observationToken: "turn:turn-1:draft:second"
+        )
+        _ = detector.detect(in: [original])
+
+        try expect(
+            detector.detect(in: [editedDraft]).isEmpty,
+            "已完成任务只修改草稿时被误报为新完成"
+        )
+    }
+
+    private static func completionDetectorIgnoresSyntheticGenerationRecovery() throws {
+        var detector = CompletionDetector()
+        let actual = item(
+            id: "temporary-rollout-gap",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed",
+            observationToken: "turn:turn-1:draft:first"
+        )
+        let fallback = item(
+            id: "temporary-rollout-gap",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed",
+            observationToken: "turn:unread:draft:first"
+        )
+        _ = detector.detect(in: [actual])
+
+        try expect(
+            detector.detect(in: [fallback]).isEmpty,
+            "rollout 暂时不可读时使用未读兜底被误报为新完成"
+        )
+        try expect(
+            detector.detect(in: [actual]).isEmpty,
+            "rollout 恢复后同一 Turn 被误报为新完成"
+        )
+    }
+
+    private static func completionUnreadRequiresCompletedStatus() throws {
+        let running = item(
+            id: "running-unread",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "running",
+            completionUnread: true
+        )
+        let completed = item(
+            id: "completed-unread",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed",
+            completionUnread: true
+        )
+
+        try expect(!running.isCompletionUnread, "执行中的任务被显示为已完成未读")
+        try expect(completed.isCompletionUnread, "已完成未读标识没有生效")
+    }
+
     private static func release(
         _ tagName: String,
         draft: Bool = false,
@@ -215,7 +308,9 @@ struct InboxRepositorySelfTests {
         id: String,
         completedAt: String,
         lastActivityAt: String? = nil,
-        status: String? = nil
+        status: String? = nil,
+        observationToken: String? = nil,
+        completionUnread: Bool? = nil
     ) -> PendingItem {
         PendingItem(
             threadID: id,
@@ -224,7 +319,9 @@ struct InboxRepositorySelfTests {
             draftKey: "local:\(id)",
             completedAt: completedAt,
             lastActivityAt: lastActivityAt,
-            status: status
+            status: status,
+            observationToken: observationToken,
+            completionUnread: completionUnread
         )
     }
 

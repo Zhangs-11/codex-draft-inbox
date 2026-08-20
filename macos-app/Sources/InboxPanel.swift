@@ -330,10 +330,16 @@ private struct InboxRow: View {
     private let completionColor = Color(red: 0.25, green: 0.78, blue: 0.43)
 
     private var statusColor: Color {
-        if item.status == "completed" {
-            return Color(red: 0.25, green: 0.78, blue: 0.43)
+        switch item.status {
+        case "completed":
+            Color(red: 0.25, green: 0.78, blue: 0.43)
+        case "failed":
+            Color(red: 0.93, green: 0.30, blue: 0.28)
+        case "aborted":
+            Color(red: 0.96, green: 0.52, blue: 0.18)
+        default:
+            Color(red: 0.96, green: 0.68, blue: 0.20)
         }
-        return Color(red: 0.96, green: 0.68, blue: 0.20)
     }
 
     var body: some View {
@@ -351,6 +357,19 @@ private struct InboxRow: View {
                     Text(item.title)
                         .font(.system(size: 13.5, weight: .semibold, design: .rounded))
                         .lineLimit(1)
+                    if item.isCompletionUnread {
+                        Label("未读", systemImage: "circle.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .labelStyle(.titleAndIcon)
+                            .foregroundStyle(Color(red: 0.31, green: 0.56, blue: 0.96))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Color(red: 0.31, green: 0.56, blue: 0.96).opacity(0.13),
+                                in: Capsule()
+                            )
+                            .accessibilityLabel("已完成但未读")
+                    }
                     if let lifecycle = lifecycleBadge {
                         Text(lifecycle.text)
                             .font(.system(size: 9, weight: .semibold))
@@ -455,6 +474,8 @@ private struct InboxRow: View {
         switch status {
         case "running": "执行中"
         case "draft": "有草稿"
+        case "failed": "执行失败"
+        case "aborted": "已中止"
         default: "已完成"
         }
     }

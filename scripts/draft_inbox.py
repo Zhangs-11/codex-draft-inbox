@@ -24,7 +24,12 @@ from typing import Any, Callable, Iterator
 STATE_VERSION = 2
 NOTIFICATION_PREVIEW_LENGTH = 180
 ROLLOUT_TAIL_LIMIT_BYTES = 2 * 1024 * 1024
-TERMINAL_TURN_EVENTS = {"task_complete", "turn_aborted", "turn_failed", "task_failed"}
+TURN_EVENT_STATUSES = {
+    "task_complete": "completed",
+    "turn_aborted": "aborted",
+    "turn_failed": "failed",
+    "task_failed": "failed",
+}
 DEFAULT_SETTINGS = {
     "version": 1,
     "show_notification_draft_preview": False,
@@ -441,6 +446,14 @@ def _notification_body(draft: str, fallback: str) -> str:
     return fallback
 
 
+def _status_notification_fallback(status: str) -> str:
+    return {
+        "completed": "任务已完成，等待你处理",
+        "failed": "任务执行失败，等待你处理",
+        "aborted": "任务已中止，等待你处理",
+    }.get(status, "任务已启动，等待你处理")
+
+
 def _apple_script_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
@@ -467,7 +480,25 @@ def _draft_fingerprint(draft: str) -> str:
     return hashlib.sha256(draft.encode("utf-8")).hexdigest()
 
 
+def _canonical_observation_token(token: Any) -> str | None:
+    if not isinstance(token, str) or not token:
+        return None
+    match = re.fullmatch(r"turn:([^:]+):([0-9a-f]{64})", token)
+    if match:
+        return f"turn:{match.group(1)}:draft:{match.group(2)}"
+    return token
+
+
+def _next_completion_unread(existing: Any, status: str) -> bool:
+    if status != "completed":
+        return False
+    if not isinstance(existing, dict) or existing.get("status") != "completed":
+        return True
+    return bool(existing.get("completion_unread", False))
+
+
 def _remember_observation(thread_id: str, token: str, source: str) -> None:
+    token = _canonical_observation_token(token) or token
     path = _observed_path()
     lock_path = path.with_suffix(path.suffix + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -478,7 +509,9 @@ def _remember_observation(thread_id: str, token: str, source: str) -> None:
             if not isinstance(observed, dict) or not isinstance(observed.get("threads"), dict):
                 observed = {"version": 2, "threads": {}}
             previous = observed["threads"].get(thread_id)
-            dismissed = previous.get("dismissed_token") if isinstance(previous, dict) else None
+            dismissed = _canonical_observation_token(
+                previous.get("dismissed_token") if isinstance(previous, dict) else None
+            )
             observed["threads"][thread_id] = {
                 "token": token,
                 "source": source,
@@ -509,7 +542,8 @@ def capture(payload: dict[str, Any], *, remember: bool = True) -> bool:
     title = _thread_title(thread_id)
     now = _now_iso()
     turn_id = payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else "unknown"
-    token = f"turn:{turn_id}:{_draft_fingerprint(draft)}"
+    token = f"turn:{turn_id}:draft:{_draft_fingerprint(draft)}"
+    completion_unread = thread_id in _unread_thread_ids(_read_json(_global_state_path(), {}))
     created = False
 
     def add_item(state: dict[str, Any]) -> bool:
@@ -524,6 +558,7 @@ def capture(payload: dict[str, Any], *, remember: bool = True) -> bool:
             "source": "codex",
             "lifecycle": _thread_metadata(thread_id)["lifecycle"],
             "verified_user_thread": True,
+            "completion_unread": completion_unread,
         }
         if isinstance(existing, dict):
             if all(existing.get(key) == value for key, value in fields.items()):
@@ -629,8 +664,10 @@ def _latest_turn_marker(thread_id: str) -> tuple[str, str] | None:
             continue
         entry_type = entry.get("type")
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-        if entry_type == "event_msg" and payload.get("type") in TERMINAL_TURN_EVENTS:
-            return "terminal", str(payload.get("turn_id") or "unknown")
+        if entry_type == "event_msg":
+            terminal_status = TURN_EVENT_STATUSES.get(payload.get("type"))
+            if terminal_status:
+                return terminal_status, str(payload.get("turn_id") or "unknown")
         if entry_type == "turn_context":
             return "running", str(payload.get("turn_id") or "unknown")
     return None
@@ -724,6 +761,8 @@ def _normalize_pending_thread_ids() -> None:
                     existing["draft_key"] = moved.get("draft_key", "")
                 if moved.get("status") == "running":
                     existing["status"] = "running"
+                if moved.get("completion_unread") is True:
+                    existing["completion_unread"] = True
                 moved_activity = str(moved.get("last_activity_at") or moved.get("completed_at") or "")
                 existing_activity = str(existing.get("last_activity_at") or existing.get("completed_at") or "")
                 if moved_activity > existing_activity:
@@ -784,7 +823,11 @@ def _observation_is_dismissed(thread_id: str, token: str) -> bool:
     observed = _read_json(_observed_path(), {})
     threads = observed.get("threads") if isinstance(observed, dict) else None
     entry = threads.get(thread_id) if isinstance(threads, dict) else None
-    return isinstance(entry, dict) and entry.get("dismissed_token") == token
+    return (
+        isinstance(entry, dict)
+        and _canonical_observation_token(entry.get("dismissed_token"))
+        == _canonical_observation_token(token)
+    )
 
 
 def _upsert_external_pending(
@@ -801,6 +844,7 @@ def _upsert_external_pending(
 
     def update(state: dict[str, Any]) -> bool:
         existing = state["items"].get(thread_id)
+        completion_unread = _next_completion_unread(existing, status)
         fields = {
             "title": title,
             "draft": draft,
@@ -811,6 +855,7 @@ def _upsert_external_pending(
             "lifecycle": "active",
             "external_session_id": external_session_id,
             "cwd": cwd,
+            "completion_unread": completion_unread,
         }
         if isinstance(existing, dict):
             if all(existing.get(key) == value for key, value in fields.items()):
@@ -883,7 +928,7 @@ def _load_claude_state() -> dict[str, Any]:
 def handle_claude_event(payload: dict[str, Any]) -> bool:
     event = payload.get("hook_event_name")
     session_id = payload.get("session_id")
-    if event not in {"SessionStart", "UserPromptSubmit", "Stop"}:
+    if event not in {"SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"}:
         return False
     if not isinstance(session_id, str) or not session_id:
         return False
@@ -899,6 +944,7 @@ def handle_claude_event(payload: dict[str, Any]) -> bool:
             session = state["sessions"].get(session_id)
             if not isinstance(session, dict):
                 session = {"counter": 0}
+            previous_status = str(session.get("status") or "")
             if event == "UserPromptSubmit":
                 session["counter"] = int(session.get("counter") or 0) + 1
             prompt = payload.get("prompt") if isinstance(payload.get("prompt"), str) else ""
@@ -921,8 +967,19 @@ def handle_claude_event(payload: dict[str, Any]) -> bool:
             token = f"claude:{session_id}:{counter}:draft:{_draft_fingerprint(draft)}"
             title = str(session.get("last_user_message") or f"Claude 会话 {session_id[:8]}")
             cwd = str(session.get("cwd") or "")
-            status = "completed" if event == "Stop" else "running"
-            defer_pending = event == "SessionStart"
+            if event == "Stop":
+                status = "completed"
+            elif event == "StopFailure":
+                status = "failed"
+            elif event == "SessionEnd":
+                status = previous_status if previous_status in {"completed", "failed", "aborted"} else "aborted"
+            elif event == "SessionStart" and previous_status in {"completed", "failed", "aborted"}:
+                status = previous_status
+            else:
+                status = "running"
+            defer_pending = event == "SessionStart" or (
+                event == "SessionEnd" and not str(session.get("last_user_message") or "").strip()
+            )
             session["status"] = status
             if is_internal:
                 session = {
@@ -1049,6 +1106,7 @@ def _upsert_pending(
     token: str,
     lifecycle: str,
     title: str | None = None,
+    completion_unread: bool = False,
 ) -> bool:
     resolved_title = title or _thread_title(thread_id)
     now = _now_iso()
@@ -1071,12 +1129,18 @@ def _upsert_pending(
             "lifecycle": lifecycle,
             "source": "codex",
             "verified_user_thread": True,
+            "completion_unread": completion_unread,
         }
         if isinstance(existing, dict):
             if all(existing.get(key) == value for key, value in fields.items()):
                 return False
+            only_read_state_changed = all(
+                key == "completion_unread" or existing.get(key) == value
+                for key, value in fields.items()
+            )
             existing.update(fields)
-            existing["last_activity_at"] = now
+            if not only_read_state_changed:
+                existing["last_activity_at"] = now
             return True
         state["items"][thread_id] = {
             "thread_id": thread_id,
@@ -1090,6 +1154,7 @@ def _upsert_pending(
 
 
 def _dismiss_observation(thread_id: str, token: str) -> None:
+    token = _canonical_observation_token(token) or token
     path = _observed_path()
     lock_path = path.with_suffix(path.suffix + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1155,7 +1220,7 @@ def sync_pending_drafts() -> int:
                     continue
                 marker = _latest_turn_marker(thread_id)
                 if marker:
-                    status = "running" if marker[0] == "running" else "completed"
+                    status = marker[0]
                     source = "rollout"
                     turn_id = marker[1]
                 elif draft:
@@ -1171,8 +1236,12 @@ def sync_pending_drafts() -> int:
 
                 token = f"turn:{turn_id}:draft:{_draft_fingerprint(draft)}"
                 previous = observed_threads.get(thread_id)
-                previous_token = previous.get("token") if isinstance(previous, dict) else None
-                dismissed_token = previous.get("dismissed_token") if isinstance(previous, dict) else None
+                previous_token = _canonical_observation_token(
+                    previous.get("token") if isinstance(previous, dict) else None
+                )
+                dismissed_token = _canonical_observation_token(
+                    previous.get("dismissed_token") if isinstance(previous, dict) else None
+                )
                 if previous_token != token:
                     dismissed_token = None
 
@@ -1201,10 +1270,11 @@ def sync_pending_drafts() -> int:
                     token=token,
                     lifecycle=lifecycle,
                     title=_thread_title(thread_id, session_names),
+                    completion_unread=status == "completed" and thread_id in unread,
                 )
                 if not already_pending:
                     captured += 1
-                    body = _notification_body(draft, "任务已启动，等待你处理")
+                    body = _notification_body(draft, _status_notification_fallback(status))
                     _notify(body, subtitle=_thread_title(thread_id, session_names))
                     codex_pending[thread_id] = {"thread_id": thread_id}
                 observed_threads[thread_id] = {
@@ -1242,6 +1312,17 @@ def clear(thread_id: str, *, manual: bool = False) -> bool:
     if manual and token:
         _dismiss_observation(thread_id, token)
     return changed
+
+
+def mark_read(thread_id: str) -> bool:
+    def update(state: dict[str, Any]) -> bool:
+        existing = state["items"].get(thread_id)
+        if not isinstance(existing, dict) or existing.get("completion_unread") is not True:
+            return False
+        existing["completion_unread"] = False
+        return True
+
+    return _mutate_state(update)
 
 
 def pending_items() -> list[dict[str, Any]]:
@@ -1314,6 +1395,8 @@ def main() -> int:
     clear_parser = subparsers.add_parser("clear")
     clear_parser.add_argument("--thread-id")
     clear_parser.add_argument("--manual", action="store_true")
+    read_parser = subparsers.add_parser("mark-read")
+    read_parser.add_argument("--thread-id", required=True)
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -1342,6 +1425,10 @@ def main() -> int:
 
     if args.command == "set-claude-draft":
         return 0 if set_claude_draft(args.thread_id, args.text) else 1
+
+    if args.command == "mark-read":
+        mark_read(args.thread_id)
+        return 0
 
     payload = _read_hook_payload() if not getattr(args, "thread_id", None) else {}
     if args.command == "claude-event":

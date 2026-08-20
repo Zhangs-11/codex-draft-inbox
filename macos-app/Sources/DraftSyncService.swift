@@ -23,6 +23,10 @@ struct DraftSyncService {
         _ = try run(arguments: ["clear", "--thread-id", threadID, "--manual"])
     }
 
+    func markRead(threadID: String) throws {
+        _ = try run(arguments: ["mark-read", "--thread-id", threadID])
+    }
+
     func saveClaudeDraft(threadID: String, text: String) throws {
         _ = try run(arguments: ["set-claude-draft", "--thread-id", threadID, "--text", text])
     }
