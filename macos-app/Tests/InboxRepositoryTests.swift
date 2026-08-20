@@ -16,6 +16,9 @@ struct InboxRepositorySelfTests {
             try comparesMultiDigitVersions()
             try checksForUpdatesOncePerDay()
             try decodesGitHubReleaseResponse()
+            try completionDetectorIgnoresInitialSnapshot()
+            try completionDetectorEmitsRunningTransitionOnlyOnce()
+            try completionDetectorCatchesFastNewCompletion()
             print("CodexDraftInbox self-test passed")
         } catch {
             fputs("CodexDraftInbox self-test failed: \(error)\n", stderr)
@@ -147,6 +150,54 @@ struct InboxRepositorySelfTests {
         try expect(releases.first?.prerelease == true, "预发布标记解析失败")
     }
 
+    private static func completionDetectorIgnoresInitialSnapshot() throws {
+        var detector = CompletionDetector()
+        let completed = item(
+            id: "already-completed",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed"
+        )
+
+        try expect(detector.detect(in: [completed]).isEmpty, "启动时把历史完成任务误报为新完成")
+    }
+
+    private static func completionDetectorEmitsRunningTransitionOnlyOnce() throws {
+        var detector = CompletionDetector()
+        let running = item(
+            id: "thread-1",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "running"
+        )
+        let completed = item(
+            id: "thread-1",
+            completedAt: "2026-08-19T09:00:00Z",
+            lastActivityAt: "2026-08-19T10:00:00Z",
+            status: "completed"
+        )
+        _ = detector.detect(in: [running])
+
+        try expect(
+            detector.detect(in: [completed]).map(\.threadID) == ["thread-1"],
+            "执行中变为已完成时没有产生完成事件"
+        )
+        try expect(detector.detect(in: [completed]).isEmpty, "同一个完成状态被重复提醒")
+    }
+
+    private static func completionDetectorCatchesFastNewCompletion() throws {
+        var detector = CompletionDetector()
+        _ = detector.detect(in: [])
+        let completed = item(
+            id: "fast-task",
+            completedAt: "2026-08-19T09:00:00Z",
+            status: "completed"
+        )
+
+        try expect(
+            detector.detect(in: [completed]).map(\.threadID) == ["fast-task"],
+            "轮询间隔内快速完成的新任务没有产生完成事件"
+        )
+    }
+
     private static func release(
         _ tagName: String,
         draft: Bool = false,
@@ -160,14 +211,20 @@ struct InboxRepositorySelfTests {
         )
     }
 
-    private static func item(id: String, completedAt: String, lastActivityAt: String? = nil) -> PendingItem {
+    private static func item(
+        id: String,
+        completedAt: String,
+        lastActivityAt: String? = nil,
+        status: String? = nil
+    ) -> PendingItem {
         PendingItem(
             threadID: id,
             title: "任务 \(id)",
             draft: "继续处理 \(id)",
             draftKey: "local:\(id)",
             completedAt: completedAt,
-            lastActivityAt: lastActivityAt
+            lastActivityAt: lastActivityAt,
+            status: status
         )
     }
 

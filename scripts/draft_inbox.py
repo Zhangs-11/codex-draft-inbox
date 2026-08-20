@@ -25,7 +25,11 @@ STATE_VERSION = 2
 NOTIFICATION_PREVIEW_LENGTH = 180
 ROLLOUT_TAIL_LIMIT_BYTES = 2 * 1024 * 1024
 TERMINAL_TURN_EVENTS = {"task_complete", "turn_aborted", "turn_failed", "task_failed"}
-DEFAULT_SETTINGS = {"version": 1, "show_notification_draft_preview": False}
+DEFAULT_SETTINGS = {
+    "version": 1,
+    "show_notification_draft_preview": False,
+    "show_completion_popover": True,
+}
 
 
 def _codex_home() -> Path:
@@ -85,10 +89,11 @@ def _load_settings() -> dict[str, Any]:
     return {
         "version": 1,
         "show_notification_draft_preview": bool(payload.get("show_notification_draft_preview", False)),
+        "show_completion_popover": bool(payload.get("show_completion_popover", True)),
     }
 
 
-def set_notification_draft_preview(enabled: bool) -> bool:
+def _set_boolean_setting(key: str, enabled: bool) -> bool:
     path = _settings_path()
     lock_path = path.with_suffix(path.suffix + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,13 +101,21 @@ def set_notification_draft_preview(enabled: bool) -> bool:
         fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             previous = _load_settings()
-            payload = {"version": 1, "show_notification_draft_preview": enabled}
+            payload = {**previous, key: enabled}
             if previous == payload and path.is_file():
                 return False
             _write_json_atomic(path, payload)
             return True
         finally:
             fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def set_notification_draft_preview(enabled: bool) -> bool:
+    return _set_boolean_setting("show_notification_draft_preview", enabled)
+
+
+def set_completion_popover(enabled: bool) -> bool:
+    return _set_boolean_setting("show_completion_popover", enabled)
 
 
 def _empty_state() -> dict[str, Any]:
@@ -1293,6 +1306,8 @@ def main() -> int:
     settings_parser.add_argument("--json", action="store_true")
     preview_parser = subparsers.add_parser("set-notification-preview")
     preview_parser.add_argument("--enabled", choices=("true", "false"), required=True)
+    completion_parser = subparsers.add_parser("set-completion-popover")
+    completion_parser.add_argument("--enabled", choices=("true", "false"), required=True)
     claude_draft_parser = subparsers.add_parser("set-claude-draft")
     claude_draft_parser.add_argument("--thread-id", required=True)
     claude_draft_parser.add_argument("--text", default="")
@@ -1315,6 +1330,10 @@ def main() -> int:
 
     if args.command == "set-notification-preview":
         set_notification_draft_preview(args.enabled == "true")
+        return 0
+
+    if args.command == "set-completion-popover":
+        set_completion_popover(args.enabled == "true")
         return 0
 
     if args.command == "sync":

@@ -328,12 +328,19 @@ class DraftInboxTest(unittest.TestCase):
 
     def test_notification_draft_preview_defaults_to_hidden_and_can_be_enabled(self):
         self.assertFalse(draft_inbox._load_settings()["show_notification_draft_preview"])
+        self.assertTrue(draft_inbox._load_settings()["show_completion_popover"])
         self.assertEqual(draft_inbox._notification_body("秘密草稿", "普通提醒"), "普通提醒")
 
         self.assertTrue(draft_inbox.set_notification_draft_preview(True))
 
         self.assertTrue(draft_inbox._load_settings()["show_notification_draft_preview"])
+        self.assertTrue(draft_inbox._load_settings()["show_completion_popover"])
         self.assertEqual(draft_inbox._notification_body("秘密草稿", "普通提醒"), "草稿：秘密草稿")
+
+        self.assertTrue(draft_inbox.set_completion_popover(False))
+        settings = draft_inbox._load_settings()
+        self.assertTrue(settings["show_notification_draft_preview"])
+        self.assertFalse(settings["show_completion_popover"])
 
     def test_corrupt_pending_file_recovers_from_last_valid_backup(self):
         self._write_drafts({"local:thread-1": "第一版草稿"})

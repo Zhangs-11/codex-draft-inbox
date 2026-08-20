@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private var itemsSubscription: AnyCancellable?
+    private var completionSubscription: AnyCancellable?
     private var previewWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,12 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 410, height: 470)
+        popover.contentSize = NSSize(width: 410, height: 530)
         popover.contentViewController = NSHostingController(rootView: InboxPanel(viewModel: viewModel))
 
         itemsSubscription = viewModel.$items.sink { [weak self] items in
             self?.updateStatusItem(count: items.count)
         }
+        completionSubscription = viewModel.$completionBatch
+            .compactMap { $0 }
+            .debounce(for: .milliseconds(700), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, self.viewModel.completionPopoverEnabled else { return }
+                self.showPopover(activating: false)
+            }
         updateStatusItem(count: viewModel.items.count)
 
         if ProcessInfo.processInfo.environment["CODEX_DRAFT_INBOX_SHOW_ON_LAUNCH"] == "1" {
@@ -74,14 +82,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePopover() {
-        popover.isShown ? popover.performClose(nil) : showPopover()
+        popover.isShown ? popover.performClose(nil) : showPopover(activating: true)
     }
 
-    private func showPopover() {
+    private func showPopover(activating: Bool) {
         guard let button = statusItem.button else { return }
-        viewModel.refresh()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        NSApp.activate(ignoringOtherApps: true)
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+        if activating {
+            viewModel.refresh()
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func showPreviewWindow() {

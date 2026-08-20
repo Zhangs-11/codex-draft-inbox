@@ -17,22 +17,30 @@ struct InboxPanel: View {
             if viewModel.items.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        sourceSection(
-                            title: "Codex",
-                            logoName: "codex-logo",
-                            color: Color(red: 0.31, green: 0.56, blue: 0.96),
-                            items: codexItems
-                        )
-                        sourceSection(
-                            title: "Claude Code",
-                            logoName: "claude-logo",
-                            color: accent,
-                            items: claudeItems
-                        )
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 10) {
+                            ForEach(viewModel.items) { item in
+                                InboxRow(
+                                    item: item,
+                                    accent: accent,
+                                    isNewlyCompleted: viewModel.newlyCompletedThreadIDs.contains(item.threadID)
+                                ) {
+                                    viewModel.openTask(item)
+                                } onHandled: {
+                                    viewModel.markHandled(item)
+                                } onSaveDraft: { text in
+                                    viewModel.saveClaudeDraft(item, text: text)
+                                }
+                                .id(item.threadID)
+                            }
+                        }
+                        .padding(12)
                     }
-                    .padding(12)
+                    .onChange(of: viewModel.completionBatch?.id) { _ in
+                        guard let threadID = viewModel.completionBatch?.items.first?.threadID else { return }
+                        proxy.scrollTo(threadID, anchor: .top)
+                    }
                 }
             }
 
@@ -41,11 +49,11 @@ struct InboxPanel: View {
             }
 
             Divider().opacity(0.55)
-            notificationPrivacy
+            reminderSettings
             Divider().opacity(0.55)
             footer
         }
-        .frame(width: 410, height: 500)
+        .frame(width: 410, height: 530)
         .background(.regularMaterial)
     }
 
@@ -227,6 +235,38 @@ struct InboxPanel: View {
         }
     }
 
+    private var reminderSettings: some View {
+        VStack(spacing: 0) {
+            completionReminder
+            Divider().opacity(0.35)
+            notificationPrivacy
+        }
+    }
+
+    private var completionReminder: some View {
+        HStack(spacing: 10) {
+            Label("完成时自动展开", systemImage: "bell.badge.fill")
+                .font(.system(size: 11, weight: .medium))
+            Text("新完成任务会置顶并短暂高亮")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+            Toggle(
+                "完成时自动展开",
+                isOn: Binding(
+                    get: { viewModel.completionPopoverEnabled },
+                    set: { viewModel.setCompletionPopover(enabled: $0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
     private var notificationPrivacy: some View {
         HStack(spacing: 10) {
             Label("通知显示草稿", systemImage: "rectangle.inset.filled.and.person.filled")
@@ -250,51 +290,6 @@ struct InboxPanel: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
     }
-
-    private var codexItems: [PendingItem] {
-        viewModel.items.filter { $0.source != "claude" }
-    }
-
-    private var claudeItems: [PendingItem] {
-        viewModel.items.filter { $0.source == "claude" }
-    }
-
-    @ViewBuilder
-    private func sourceSection(
-        title: String,
-        logoName: String,
-        color: Color,
-        items: [PendingItem]
-    ) -> some View {
-        if !items.isEmpty {
-            HStack(spacing: 8) {
-                SourceLogo(name: logoName)
-                Text(title)
-                    .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                Text("\(items.count)")
-                    .font(.system(size: 10, weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(color)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(color.opacity(0.13), in: Capsule())
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(height: 1)
-            }
-            .padding(.horizontal, 2)
-            .padding(.top, 2)
-
-            ForEach(items) { item in
-                InboxRow(item: item, accent: accent) {
-                    viewModel.openTask(item)
-                } onHandled: {
-                    viewModel.markHandled(item)
-                } onSaveDraft: { text in
-                    viewModel.saveClaudeDraft(item, text: text)
-                }
-            }
-        }
-    }
 }
 
 private struct SourceLogo: View {
@@ -315,19 +310,24 @@ private struct SourceLogo: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(width: 27, height: 27)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .frame(width: 24, height: 24)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
 private struct InboxRow: View {
     let item: PendingItem
     let accent: Color
+    let isNewlyCompleted: Bool
     let onOpen: () -> Void
     let onHandled: () -> Void
     let onSaveDraft: (String) -> Void
 
     @State private var hovering = false
+    @State private var completionPulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let completionColor = Color(red: 0.25, green: 0.78, blue: 0.43)
 
     private var statusColor: Color {
         if item.status == "completed" {
@@ -345,7 +345,9 @@ private struct InboxRow: View {
                 .padding(.trailing, 11)
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
+                    SourceLogo(name: item.source == "claude" ? "claude-logo" : "codex-logo")
+                        .help(item.source == "claude" ? "Claude Code" : "Codex")
                     Text(item.title)
                         .font(.system(size: 13.5, weight: .semibold, design: .rounded))
                         .lineLimit(1)
@@ -359,7 +361,7 @@ private struct InboxRow: View {
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(statusText(item.status))
+                        Text(isNewlyCompleted ? "刚刚完成" : statusText(item.status))
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(statusColor)
                         Text(relativeTime(item.effectiveActivityAt))
@@ -404,14 +406,41 @@ private struct InboxRow: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(hovering ? 0.9 : 0.64))
+                .fill(
+                    isNewlyCompleted
+                        ? completionColor.opacity(completionPulse ? 0.16 : 0.08)
+                        : Color(nsColor: .controlBackgroundColor).opacity(hovering ? 0.9 : 0.64)
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(hovering ? 0.12 : 0.06), lineWidth: 1)
+                .strokeBorder(
+                    isNewlyCompleted
+                        ? completionColor.opacity(completionPulse ? 0.82 : 0.38)
+                        : Color.primary.opacity(hovering ? 0.12 : 0.06),
+                    lineWidth: isNewlyCompleted ? 1.5 : 1
+                )
         )
+        .shadow(
+            color: isNewlyCompleted ? completionColor.opacity(completionPulse ? 0.24 : 0.08) : .clear,
+            radius: isNewlyCompleted ? 10 : 0
+        )
+        .scaleEffect(isNewlyCompleted && completionPulse ? 1.006 : 1)
         .onHover { hovering = $0 }
+        .onAppear { updateCompletionPulse(isActive: isNewlyCompleted) }
+        .onChange(of: isNewlyCompleted) { updateCompletionPulse(isActive: $0) }
         .animation(.easeOut(duration: 0.14), value: hovering)
+    }
+
+    private func updateCompletionPulse(isActive: Bool) {
+        guard isActive, !reduceMotion else {
+            completionPulse = false
+            return
+        }
+        completionPulse = false
+        withAnimation(.easeInOut(duration: 0.65).repeatCount(3, autoreverses: true)) {
+            completionPulse = true
+        }
     }
 
     private func relativeTime(_ raw: String) -> String {

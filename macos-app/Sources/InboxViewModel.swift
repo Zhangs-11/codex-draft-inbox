@@ -3,11 +3,19 @@ import Combine
 import DraftInboxCore
 import Foundation
 
+struct CompletionBatch {
+    let id = UUID()
+    let items: [PendingItem]
+}
+
 @MainActor
 final class InboxViewModel: ObservableObject {
     @Published private(set) var items: [PendingItem] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var notificationDraftPreviewEnabled = false
+    @Published private(set) var completionPopoverEnabled = true
+    @Published private(set) var newlyCompletedThreadIDs: Set<String> = []
+    @Published private(set) var completionBatch: CompletionBatch?
     @Published private(set) var isRefreshing = false
     @Published private(set) var updateCheckState: UpdateCheckState = .idle
     @Published private(set) var isCheckingForUpdates = false
@@ -20,6 +28,8 @@ final class InboxViewModel: ObservableObject {
     private var timer: Timer?
     private var updateTimer: Timer?
     private var refreshCoordinator = RefreshCoordinator()
+    private var completionDetector = CompletionDetector()
+    private var completionHighlightGeneration = 0
     private let lastUpdateCheckKey = "CodexDraftInbox.lastUpdateCheckAt"
     private let availableUpdateTagKey = "CodexDraftInbox.availableUpdateTag"
     private let availableUpdateURLKey = "CodexDraftInbox.availableUpdateURL"
@@ -40,7 +50,6 @@ final class InboxViewModel: ObservableObject {
         self.currentVersion = currentVersion
         self.defaults = defaults
         reload()
-        synchronize()
         loadSettings()
         loadCachedUpdate()
         checkForUpdatesIfNeeded()
@@ -61,10 +70,27 @@ final class InboxViewModel: ObservableObject {
 
     func reload() {
         do {
-            items = try repository.load()
+            let loadedItems = try repository.load()
+            let completedItems = completionDetector.detect(in: loadedItems)
+            items = loadedItems
+            if !completedItems.isEmpty {
+                registerCompletion(completedItems)
+            }
             errorMessage = nil
         } catch {
             errorMessage = "待办文件暂时无法读取"
+        }
+    }
+
+    private func registerCompletion(_ completedItems: [PendingItem]) {
+        completionHighlightGeneration += 1
+        let generation = completionHighlightGeneration
+        newlyCompletedThreadIDs.formUnion(completedItems.map(\.threadID))
+        completionBatch = CompletionBatch(items: completedItems)
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, self.completionHighlightGeneration == generation else { return }
+            self.newlyCompletedThreadIDs.removeAll()
         }
     }
 
@@ -194,11 +220,17 @@ final class InboxViewModel: ObservableObject {
     }
 
     private func loadSettings() {
-        guard let syncService else { return }
+        guard let syncService else {
+            synchronize()
+            return
+        }
         Task.detached {
-            let enabled = (try? syncService.notificationDraftPreviewEnabled()) ?? false
+            let settings = (try? syncService.settings())
             await MainActor.run { [weak self] in
-                self?.notificationDraftPreviewEnabled = enabled
+                guard let self else { return }
+                self.notificationDraftPreviewEnabled = settings?.notificationDraftPreviewEnabled ?? false
+                self.completionPopoverEnabled = settings?.completionPopoverEnabled ?? true
+                self.synchronize()
             }
         }
     }
@@ -214,6 +246,22 @@ final class InboxViewModel: ObservableObject {
             } catch {
                 await MainActor.run { [weak self] in
                     self?.errorMessage = "通知隐私设置保存失败"
+                }
+            }
+        }
+    }
+
+    func setCompletionPopover(enabled: Bool) {
+        guard let syncService else { return }
+        Task.detached {
+            do {
+                try syncService.setCompletionPopover(enabled: enabled)
+                await MainActor.run { [weak self] in
+                    self?.completionPopoverEnabled = enabled
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = "完成提醒设置保存失败"
                 }
             }
         }

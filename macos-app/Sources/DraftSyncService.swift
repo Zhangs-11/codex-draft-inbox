@@ -1,5 +1,10 @@
 import Foundation
 
+struct InboxSettings {
+    let notificationDraftPreviewEnabled: Bool
+    let completionPopoverEnabled: Bool
+}
+
 struct DraftSyncService {
     let scriptURL: URL
 
@@ -22,14 +27,21 @@ struct DraftSyncService {
         _ = try run(arguments: ["set-claude-draft", "--thread-id", threadID, "--text", text])
     }
 
-    func notificationDraftPreviewEnabled() throws -> Bool {
+    func settings() throws -> InboxSettings {
         let data = try run(arguments: ["settings", "--json"])
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return payload?["show_notification_draft_preview"] as? Bool ?? false
+        return InboxSettings(
+            notificationDraftPreviewEnabled: payload?["show_notification_draft_preview"] as? Bool ?? false,
+            completionPopoverEnabled: payload?["show_completion_popover"] as? Bool ?? true
+        )
     }
 
     func setNotificationDraftPreview(enabled: Bool) throws {
         _ = try run(arguments: ["set-notification-preview", "--enabled", enabled ? "true" : "false"])
+    }
+
+    func setCompletionPopover(enabled: Bool) throws {
+        _ = try run(arguments: ["set-completion-popover", "--enabled", enabled ? "true" : "false"])
     }
 
     private func run(arguments: [String]) throws -> Data {

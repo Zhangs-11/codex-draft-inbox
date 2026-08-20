@@ -19,14 +19,26 @@ let package = Package(
                 "InboxPanel.swift",
                 "InboxViewModel.swift",
             ],
-            sources: ["AppRelease.swift", "InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
+            sources: [
+                "AppRelease.swift",
+                "CompletionDetector.swift",
+                "InboxModels.swift",
+                "InboxRepository.swift",
+                "RefreshCoordinator.swift",
+            ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
             name: "CodexDraftInbox",
             dependencies: ["DraftInboxCore"],
             path: "Sources",
-            exclude: ["AppRelease.swift", "InboxModels.swift", "InboxRepository.swift", "RefreshCoordinator.swift"],
+            exclude: [
+                "AppRelease.swift",
+                "CompletionDetector.swift",
+                "InboxModels.swift",
+                "InboxRepository.swift",
+                "RefreshCoordinator.swift",
+            ],
             sources: [
                 "CodexDraftInboxApp.swift",
                 "DraftSyncService.swift",
